@@ -1,5 +1,7 @@
 """
-Simple example showing how to use the active learning tool.
+ALIRA – Active Learning Iterative Retrieval Agent
+
+Simple example showing how to use ALIRA.
 This example uses a CSV file with 20 scientific papers (10 about robotics, 10 about deep learning).
 """
 

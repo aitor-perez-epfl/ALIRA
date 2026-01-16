@@ -25,7 +25,7 @@ git add .
 Commit all the files:
 
 ```bash
-git commit -m "Initial commit: Active Learning Document Classifier"
+git commit -m "Initial commit: ALIRA – Active Learning Iterative Retrieval Agent"
 ```
 
 ### Step 4: Create a New Repository on GitHub
@@ -33,24 +33,16 @@ git commit -m "Initial commit: Active Learning Document Classifier"
 2. Click the "+" icon in the top right corner
 3. Select "New repository"
 4. Choose a repository name (e.g., "active-learning-llm" or "al-llm")
-5. Add a description (optional): "Active Learning tool for filtering large dataframes using LLMs"
+5. Add a description (optional): "ALIRA – Active Learning Iterative Retrieval Agent. Combines RAG with active learning to iteratively discover relevant documents from large corpora using LLM validation and classifier refinement."
 6. Choose visibility (Public or Private)
 7. **DO NOT** initialize with README, .gitignore, or license (you already have these)
 8. Click "Create repository"
 
 ### Step 5: Connect Local Repository to GitHub
-After creating the repository, GitHub will show you commands. Use these (replace `YOUR_USERNAME` and `YOUR_REPO_NAME`):
+Connect to your repository at https://github.com/gaelbernard/ALIRA:
 
 ```bash
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
-git branch -M main
-git push -u origin main
-```
-
-**Example:**
-If your username is `johndoe` and repo name is `active-learning-llm`:
-```bash
-git remote add origin https://github.com/johndoe/active-learning-llm.git
+git remote add origin https://github.com/gaelbernard/ALIRA.git
 git branch -M main
 git push -u origin main
 ```

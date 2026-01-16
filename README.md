@@ -1,6 +1,6 @@
-# Active Learning Document Classifier
+# ALIRA – Active Learning Iterative Retrieval Agent
 
-A simple tool for filtering large dataframes using active learning. The tool identifies documents that match a given query/topic through an iterative active learning process.
+Combines RAG with active learning to iteratively discover relevant documents from large corpora using LLM validation and classifier refinement.
 
 ## Installation
 

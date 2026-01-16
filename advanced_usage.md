@@ -1,6 +1,6 @@
 # Advanced Usage Guide
 
-This guide covers advanced features and customization options for the Active Learning Document Classifier.
+This guide covers advanced features and customization options for ALIRA (Active Learning Iterative Retrieval Agent).
 
 ## Loading Existing Embeddings
 
