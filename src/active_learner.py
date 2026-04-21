@@ -10,10 +10,8 @@ from sklearn.metrics.pairwise import euclidean_distances
 from sklearn.cluster import MiniBatchKMeans
 from dotenv import load_dotenv
 
-from .embedding_service import create_embedding_service
-from .generation_llm import create_generation_llm
-from .evaluation_llm import create_evaluation_llm
-from .classifiers import LogisticRegressionClassifier
+from alira.classifiers import LogisticRegressionClassifier
+from alira.llms import generate_documents, evaluate_documents
 
 # Load environment variables from .env file at project root
 env_path = Path(__file__).parent.parent / '.env'
@@ -61,24 +59,28 @@ def select_stratified_diverse(df: pd.DataFrame, n_samples: int) -> pd.DataFrame:
 
 class ActiveLearner:
     """Active learning classifier for document filtering."""
-    
-    def __init__(self, dataset_path: str, 
-                 embedding_model: str = None,
-                 generation_llm_model: str = "gpt-4o-mini",
-                 evaluation_llm_model: str = "gpt-5.2",
-                 api_key: str = None,
-                 n_synthetic_titles: int = 10,
-                 n_nearest_start: int = 40,
-                 n_iterations: int = 15,
-                 n_eval_per_iteration: int = 20,
-                 evaluation_query: str = None,
-                 c_value: float = 1.0):
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        embeddings: np.ndarray,
+        generation_llm_model: str = "gpt-4o-mini",
+        evaluation_llm_model: str = "gpt-5.2",
+        api_key: str = None,
+        n_synthetic_titles: int = 10,
+        n_nearest_start: int = 40,
+        n_iterations: int = 15,
+        n_eval_per_iteration: int = 20,
+        evaluation_query: str = None,
+        c_value: float = 1.0,
+    ):
         """
         Initialize active learner with dataset.
         
         Args:
-            dataset_path: Path to dataset directory
-            embedding_model: Embedding model name (must match dataset, auto-detected if None)
+            df: DataFrame containing documents.
+            embeddings: Embedding vectors of the documents.
+            document_types: Types of documents to include in active learner.
             generation_llm_model: Generation LLM model name
             evaluation_llm_model: Evaluation LLM model name
             api_key: API key (if None, loads from OPENAI_API_KEY environment variable)
@@ -89,6 +91,7 @@ class ActiveLearner:
             evaluation_query: Custom evaluation query template
             c_value: C parameter for LogisticRegression
         """
+
         # Load API key from environment variable if not provided
         if api_key is None:
             api_key = os.getenv("OPENAI_API_KEY")
@@ -98,32 +101,13 @@ class ActiveLearner:
                     "or create a .env file at the project root with OPENAI_API_KEY=your-key"
                 )
         
-        # Load dataset metadata
-        with open(f"{dataset_path}/metadata.json") as f:
-            self.metadata = json.load(f)
-        
-        # Load dataframe and embeddings
-        self.df = pd.read_parquet(f"{dataset_path}/dataframe.parquet")
-        self.embeddings = np.load(f"{dataset_path}/embeddings.npy")
-        
         # Validate embeddings shape
-        if len(self.embeddings) != len(self.df):
+        if len(self.df) != len(self.embeddings):
             raise ValueError(f"Embeddings shape {len(self.embeddings)} doesn't match dataframe length {len(self.df)}")
         
-        # Determine embedding model (from param or dataset metadata)
-        if embedding_model is None:
-            embedding_model = self.metadata["embedding_service"]["model"]
-        
-        # Create services using factories
-        self.embedding_service = create_embedding_service(api_key, embedding_model)
-        self.generation_llm = create_generation_llm(api_key, generation_llm_model)
-        self.evaluation_llm = create_evaluation_llm(api_key, evaluation_llm_model)
-        
-        # Validate embedding service matches dataset
-        self._validate_embedding_service()
-        
         # Store parameters
-        self.dataset_path = dataset_path
+        self.df = df
+        self.embeddings = embeddings
         self.n_synthetic_titles = n_synthetic_titles
         self.n_nearest_start = n_nearest_start
         self.n_iterations = n_iterations
@@ -131,18 +115,6 @@ class ActiveLearner:
         self.evaluation_query = evaluation_query or "Classify each paper as related (1) or not related (0) to: {topic}"
         self.c_value = c_value
         self.log_file = None
-        
-    def _validate_embedding_service(self):
-        """Validate that current embedding service matches dataset's embedding service."""
-        dataset_embedding_info = self.metadata["embedding_service"]
-        current_embedding_info = self.embedding_service.get_model_info()
-        
-        if dataset_embedding_info != current_embedding_info:
-            raise ValueError(
-                f"Embedding service mismatch! "
-                f"Dataset was created with {dataset_embedding_info}, "
-                f"but current service is {current_embedding_info}"
-            )
         
     def _log(self, message: str):
         """Log message to console and file."""
