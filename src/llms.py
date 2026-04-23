@@ -1,4 +1,3 @@
-import re
 from typing import Annotated, List
 
 from pydantic import BaseModel, Field, RootModel
@@ -34,24 +33,26 @@ def send_llm_request(messages, response_format=None):
     return content
 
 
-def generate_documents(topic: str, n: int, model: BaseModel) -> list:
-    """Generate synthetic documents using an LLM."""
-
-    # Turn CamelCased class name into readable words
-    document_type = re.sub(r'(?<!^)(?=[A-Z])', ' ', model.__name__).lower()
-    document_description = model.__doc__
+def generate_documents(topic: str, n: int, document_type: str) -> list[str]:
+    """Generate synthetic documents of the given type about the given topic using an LLM."""
 
     prompt = f"""
-You are an expert in writing {document_type} content about "{topic}".
-An item of {document_type} is described as {document_description}.
-Produce a list of exactly {n} items of {document_type} about "{topic}".
+You are an expert in writing documents of the type `{document_type}` about a given topic.
+Produce a list of exactly {n} documents of the type `{document_type}` related to the topic "{topic}".
+Each should consist of a name or title and a brief representative piece of text (e.g. an abstract for a publication, a description for a grant, etc.).
 """
 
-    messages = [{'role': 'user', 'content': prompt}]
-    list_model = RootModel[Annotated[List[model], Field(min_length=n, max_length=n)]]
-    model_instances = send_llm_request(messages, response_format=list_model)
+    class Document(BaseModel):
+        name: str
+        description: str
 
-    return model_instances.root
+    messages = [{'role': 'user', 'content': prompt}]
+    list_model = RootModel[Annotated[List[Document], Field(min_length=n, max_length=n)]]
+    documents = send_llm_request(messages, response_format=list_model)
+
+    documents = ['\n'.join([document.name, document.description]) for document in documents.root]
+
+    return documents
 
 
 def evaluate_documents(topic: str, texts: list) -> list:
@@ -60,30 +61,25 @@ def evaluate_documents(topic: str, texts: list) -> list:
     n = len(texts)
 
     prompt = f"""
-You are an expert in classifying documents about "{topic}".
+You are an expert in classifying documents according to a given topic.
 Classify each document as *related* (True) or *not related* (False) with the topic "{topic}".
 Produce a list of exactly {n} bools, one for each document, in the same order as the documents.
 
-{"\n".join(f"{i}. {t}" for i, t in enumerate(texts))}
+{"\n".join(f"{i}. {text}" for i, text in enumerate(texts))}
 """
 
     messages = [{'role': 'user', 'content': prompt}]
     list_model = RootModel[Annotated[List[bool], Field(min_length=n, max_length=n)]]
-    model_instances = send_llm_request(messages, response_format=list_model)
+    evaluations = send_llm_request(messages, response_format=list_model)
 
-    return model_instances.root
+    return evaluations.root
 
 
 if __name__ == '__main__':
     topic = 'machine learning'
     n = 3
 
-    class AcademicPublication(BaseModel):
-        """An academic publication contains a title and short abstract (~1 sentence)."""
-        title: str
-        abstract: str
-
-    publications = generate_documents(topic, n, AcademicPublication)
+    publications = generate_documents(topic, n, 'publication')
 
     print(publications)
 

@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from alira.classifiers import LogisticRegressionClassifier
 from alira.llms import generate_documents, evaluate_documents
 
+from alira.opensearch import search, embed
+
 # Load environment variables from .env file at project root
 env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path)
@@ -62,12 +64,12 @@ class ActiveLearner:
 
     def __init__(
         self,
-        df: pd.DataFrame,
-        embeddings: np.ndarray,
+        index_name: str,
+        document_type: str,
         generation_llm_model: str = "gpt-4o-mini",
         evaluation_llm_model: str = "gpt-5.2",
         api_key: str = None,
-        n_synthetic_titles: int = 10,
+        n_synthetic_documents: int = 10,
         n_nearest_start: int = 40,
         n_iterations: int = 15,
         n_eval_per_iteration: int = 20,
@@ -78,43 +80,45 @@ class ActiveLearner:
         Initialize active learner with dataset.
         
         Args:
-            df: DataFrame containing documents.
-            embeddings: Embedding vectors of the documents.
-            document_types: Types of documents to include in active learner.
+            index_name: OpenSearch index where to fetch documents from.
+            document_types: Type of the documents to include in active learner.
             generation_llm_model: Generation LLM model name
             evaluation_llm_model: Evaluation LLM model name
-            api_key: API key (if None, loads from OPENAI_API_KEY environment variable)
-            n_synthetic_titles: Number of synthetic titles to generate
+            n_synthetic_documents: Number of synthetic documents to generate
             n_nearest_start: Number of nearest docs for initial labeling
             n_iterations: Maximum number of active learning iterations
             n_eval_per_iteration: Number of docs to evaluate per iteration
             evaluation_query: Custom evaluation query template
             c_value: C parameter for LogisticRegression
         """
-
-        # Load API key from environment variable if not provided
-        if api_key is None:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if api_key is None:
-                raise ValueError(
-                    "API key not found. Please set OPENAI_API_KEY environment variable "
-                    "or create a .env file at the project root with OPENAI_API_KEY=your-key"
-                )
-        
-        # Validate embeddings shape
-        if len(self.df) != len(self.embeddings):
-            raise ValueError(f"Embeddings shape {len(self.embeddings)} doesn't match dataframe length {len(self.df)}")
         
         # Store parameters
-        self.df = df
-        self.embeddings = embeddings
-        self.n_synthetic_titles = n_synthetic_titles
+        self.index_name = index_name
+        self.document_type = document_type
+        self.n_synthetic_documents = n_synthetic_documents
         self.n_nearest_start = n_nearest_start
         self.n_iterations = n_iterations
         self.n_eval_per_iteration = n_eval_per_iteration
         self.evaluation_query = evaluation_query or "Classify each paper as related (1) or not related (0) to: {topic}"
         self.c_value = c_value
         self.log_file = None
+
+
+    def _fetch(self, query: str):
+        # Fetch data from OpenSearch index
+        response = search(self.index_name, document_type=self.document_type, query=query)
+        hits = response['hits']['hits']
+
+        # Split into df and embeddings
+        records = [{"score": hit["_score"], **hit["_source"]} for hit in hits]
+        self.df = pd.DataFrame(
+            [{"id": r["id"], "type": r["type"], "name": r["name"], "text": r["text"], "score": r["score"]} for r in records]
+        )
+        self.embeddings = np.array([r["embedding"] for r in records])
+
+        # Validate shapes
+        if len(self.df) != len(self.embeddings):
+            raise ValueError(f"Embeddings shape {len(self.embeddings)} doesn't match dataframe length {len(self.df)}")
         
     def _log(self, message: str):
         """Log message to console and file."""
@@ -147,47 +151,49 @@ class ActiveLearner:
         self.log_file = open(log_path, "w")
         
         self._log(f"Starting classification for query: {query}")
+
+        # Fetch data
+        self._fetch(query)
         
-        # Get text column from metadata
-        text_column = self.metadata["dataframe_info"]["text_column"]
+        # Generate synthetic documents
+        self._log(f"Generating {self.n_synthetic_documents} synthetic documents...")
+        synthetic_documents = generate_documents(query, self.n_synthetic_documents, self.document_type)
+        self._log(f"Generated {len(synthetic_documents)} synthetic documents")
         
-        # Generate synthetic titles
-        self._log(f"Generating {self.n_synthetic_titles} synthetic titles...")
-        titles = None
-        for attempt in range(3):
-            titles = self.generation_llm.generate_titles(query, self.n_synthetic_titles)
-            if titles:
-                break
-        if not titles:
-            raise ValueError("Failed to generate titles after 3 attempts")
-        
-        self._log(f"Generated {len(titles)} synthetic titles")
-        
-        # Embed synthetic titles
-        self._log("Embedding synthetic titles...")
-        synthetic_emb = self.embedding_service.embed_texts(titles)
-        synthetic_emb_array = np.array(synthetic_emb)
-        
+        # Embed synthetic documents
+        self._log("Embedding synthetic documents...")
+        synthetic_embeddings = embed(synthetic_documents)
+        synthetic_embeddings = np.array(synthetic_embeddings)
+        self._log(f"Embedded {len(synthetic_embeddings)} synthetic documents")
+
         # Build working dataframe
         working_df = self.df.copy()
         working_df["embedding"] = [self.embeddings[i] for i in range(len(working_df))]
         working_df["gt"] = pd.NA
         working_df["is_synthetic"] = False
-        
+
+        print(working_df)
+
         # Create synthetic dataframe
         synthetic_df = pd.DataFrame({
-            text_column: titles,
-            "embedding": [synthetic_emb_array[i] for i in range(len(titles))],
+            "text": synthetic_documents,
+            "embedding": [synthetic_emb[i] for i in range(len(synthetic_documents))],
             "is_synthetic": True,
             "gt": True
         })
         synthetic_df.index = range(-1, -1 - len(synthetic_df), -1)
+
+        print(synthetic_df)
         
         # Combine
         ldf = pd.concat([synthetic_df, working_df])
+
+        print(ldf)
+
+        ################################################################
         
         # Distance to centroid
-        centroid = np.mean(synthetic_emb_array, axis=0).reshape(1, -1)
+        centroid = np.mean(synthetic_emb, axis=0).reshape(1, -1)
         all_embeddings = np.vstack(ldf["embedding"].values)
         ldf["distance_to_centroid"] = euclidean_distances(all_embeddings, centroid).ravel()
         
@@ -353,7 +359,7 @@ class ActiveLearner:
             "embedding_model": self.embedding_service.get_model_info(),
             "generation_llm_model": {"provider": "openai", "model": self.generation_llm.model},
             "evaluation_llm_model": {"provider": "openai", "model": self.evaluation_llm.model},
-            "n_synthetic_titles": self.n_synthetic_titles,
+            "n_synthetic_documents": self.n_synthetic_documents,
             "n_nearest_start": self.n_nearest_start,
             "n_iterations": self.n_iterations,
             "n_eval_per_iteration": self.n_eval_per_iteration,
