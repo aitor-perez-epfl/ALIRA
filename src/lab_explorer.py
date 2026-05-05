@@ -16,12 +16,13 @@ document_type = "publication"
 query = "robotics"
 
 # Step 2: Find publications related to robotics
-print(f"Running classification for `{document_type}` related to `{query}`...")
+print(f"Preparing Active Learner for documents with type `{document_type}`...")
 learner = ActiveLearner(
     index_name=index_name,
     document_type=document_type
 )
 
+print(f"Running classification for query=`{query}`...")
 results_df, session_dir, params = learner.classify(query=query)
 
 print(f"\nFound {len(results_df)} positive items (robotics papers)")

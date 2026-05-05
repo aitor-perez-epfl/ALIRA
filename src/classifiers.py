@@ -11,7 +11,7 @@ class AbstractClassifier(ABC):
         raise NotImplementedError
         
     @abstractmethod
-    def predict(self, X):
+    def predict_proba(self, X):
         """Predict class probabilities."""
         raise NotImplementedError
 
@@ -23,7 +23,7 @@ class LogisticRegressionClassifier(AbstractClassifier):
         self.c = c
         self.model = LogisticRegression(
             C=c,
-            penalty="l2",
+            l1_ratio=0,
             max_iter=10000,
             solver="saga",
             class_weight="balanced"
@@ -33,6 +33,6 @@ class LogisticRegressionClassifier(AbstractClassifier):
         """Train the logistic regression model."""
         self.model.fit(X, y)
         
-    def predict(self, X):
+    def predict_proba(self, X):
         """Predict class probabilities."""
-        return self.model.predict(X)
+        return self.model.predict_proba(X)

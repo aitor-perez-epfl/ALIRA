@@ -13,11 +13,15 @@ from dotenv import load_dotenv
 from alira.classifiers import LogisticRegressionClassifier
 from alira.llms import generate_documents, evaluate_documents
 
-from alira.opensearch import search, embed
+from alira.opensearch import fetch_all, embed
 
 # Load environment variables from .env file at project root
 env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(dotenv_path=env_path)
+
+pd.set_option('display.max_rows', 500)
+pd.set_option('display.max_columns', 500)
+pd.set_option('display.width', 1000)
 
 
 def select_stratified_diverse(df: pd.DataFrame, n_samples: int) -> pd.DataFrame:
@@ -68,12 +72,10 @@ class ActiveLearner:
         document_type: str,
         generation_llm_model: str = "gpt-4o-mini",
         evaluation_llm_model: str = "gpt-5.2",
-        api_key: str = None,
         n_synthetic_documents: int = 10,
         n_nearest_start: int = 40,
         n_iterations: int = 15,
         n_eval_per_iteration: int = 20,
-        evaluation_query: str = None,
         c_value: float = 1.0,
     ):
         """
@@ -88,7 +90,6 @@ class ActiveLearner:
             n_nearest_start: Number of nearest docs for initial labeling
             n_iterations: Maximum number of active learning iterations
             n_eval_per_iteration: Number of docs to evaluate per iteration
-            evaluation_query: Custom evaluation query template
             c_value: C parameter for LogisticRegression
         """
         
@@ -99,27 +100,24 @@ class ActiveLearner:
         self.n_nearest_start = n_nearest_start
         self.n_iterations = n_iterations
         self.n_eval_per_iteration = n_eval_per_iteration
-        self.evaluation_query = evaluation_query or "Classify each paper as related (1) or not related (0) to: {topic}"
         self.c_value = c_value
         self.log_file = None
 
+        # Fetch data
+        self._fetch()
 
-    def _fetch(self, query: str):
+    def _fetch(self):
         # Fetch data from OpenSearch index
-        response = search(self.index_name, document_type=self.document_type, query=query)
+        self._log(f"Fetching documents with type {self.document_type}...")
+
+        response = fetch_all(self.index_name, document_type=self.document_type)
         hits = response['hits']['hits']
 
-        # Split into df and embeddings
-        records = [{"score": hit["_score"], **hit["_source"]} for hit in hits]
-        self.df = pd.DataFrame(
-            [{"id": r["id"], "type": r["type"], "name": r["name"], "text": r["text"], "score": r["score"]} for r in records]
-        )
-        self.embeddings = np.array([r["embedding"] for r in records])
+        self._log(f"Fetched {len(hits)} documents with type {self.document_type}")
 
-        # Validate shapes
-        if len(self.df) != len(self.embeddings):
-            raise ValueError(f"Embeddings shape {len(self.embeddings)} doesn't match dataframe length {len(self.df)}")
-        
+        # Store data
+        self.df = pd.DataFrame([hit["_source"] for hit in hits])
+
     def _log(self, message: str):
         """Log message to console and file."""
         print(message)
@@ -145,15 +143,12 @@ class ActiveLearner:
         session_id = str(uuid4())
         session_dir = os.path.join(output_dir, session_id)
         os.makedirs(session_dir, exist_ok=True)
-        
+
         # Initialize log file
         log_path = os.path.join(session_dir, "run.log")
         self.log_file = open(log_path, "w")
         
         self._log(f"Starting classification for query: {query}")
-
-        # Fetch data
-        self._fetch(query)
         
         # Generate synthetic documents
         self._log(f"Generating {self.n_synthetic_documents} synthetic documents...")
@@ -166,68 +161,50 @@ class ActiveLearner:
         synthetic_embeddings = np.array(synthetic_embeddings)
         self._log(f"Embedded {len(synthetic_embeddings)} synthetic documents")
 
-        # Build working dataframe
-        working_df = self.df.copy()
-        working_df["embedding"] = [self.embeddings[i] for i in range(len(working_df))]
-        working_df["gt"] = pd.NA
-        working_df["is_synthetic"] = False
+        # Build documents dataframe
+        documents_df = self.df[['text', 'embedding']].copy()
+        documents_df["gt"] = pd.NA
+        documents_df["is_synthetic"] = False
 
-        print(working_df)
-
-        # Create synthetic dataframe
+        # Build synthetic dataframe
         synthetic_df = pd.DataFrame({
             "text": synthetic_documents,
-            "embedding": [synthetic_emb[i] for i in range(len(synthetic_documents))],
+            "embedding": [synthetic_embeddings[i] for i in range(len(synthetic_documents))],
             "is_synthetic": True,
             "gt": True
         })
         synthetic_df.index = range(-1, -1 - len(synthetic_df), -1)
+        
+        # Combine both dataframes
+        df = pd.concat([synthetic_df, documents_df])
 
-        print(synthetic_df)
-        
-        # Combine
-        ldf = pd.concat([synthetic_df, working_df])
+        # Select initial candidates to evaluate as the closest to the synthetic centroid
+        all_embeddings = np.vstack(df["embedding"].values)
+        synthetic_centroid = np.mean(synthetic_embeddings, axis=0).reshape(1, -1)
+        synthetic_centroid = synthetic_centroid / np.linalg.norm(synthetic_centroid)
+        df["distance_to_centroid"] = euclidean_distances(all_embeddings, synthetic_centroid).ravel()
 
-        print(ldf)
+        not_is_synthetic = ~df["is_synthetic"]
 
-        ################################################################
-        
-        # Distance to centroid
-        centroid = np.mean(synthetic_emb, axis=0).reshape(1, -1)
-        all_embeddings = np.vstack(ldf["embedding"].values)
-        ldf["distance_to_centroid"] = euclidean_distances(all_embeddings, centroid).ravel()
-        
-        real_docs_mask = ~ldf["is_synthetic"]
-        
-        # Initial labeling: N nearest docs
-        self._log(f"Selecting {self.n_nearest_start} nearest documents for initial labeling...")
-        closest = ldf.loc[real_docs_mask].nsmallest(self.n_nearest_start, "distance_to_centroid")
-        
-        evaluation = self.evaluation_llm.evaluate(
-            closest[text_column].tolist(),
-            query,
-            self.evaluation_query
-        )
-        if evaluation is None:
-            raise ValueError("LLM evaluation failed after all retries")
-        
-        ldf.loc[closest.index, "gt"] = pd.array(evaluation, dtype="boolean")
-        
-        validated_count = ldf.loc[closest.index].query("gt == True").shape[0]
-        rejected_count = ldf.loc[closest.index].query("gt == False").shape[0]
-        self._log(f"Initial labeling: {validated_count} validated, {rejected_count} rejected")
-        
-        # Active learning loop
-        self._log("Starting active learning iterations...")
-        model = None
+        self._log(f"Selecting the closest {self.n_nearest_start} documents to the synthetic centroid as candidates to evaluate...")
+        candidates = df.loc[not_is_synthetic].nsmallest(self.n_nearest_start, "distance_to_centroid")
+
+        # Active Learning loop
+        self._log("Starting active learning loop...")
         classifier = None
-        prev_pos_idx = None
+        prev_positives = None
         early_stop_threshold = 0.02
-        iteration = 0
-        
         for iteration in range(1, self.n_iterations + 1):
+            # Evaluate candidates with LLM
+            evaluations = evaluate_documents(topic=query, texts=candidates["text"].tolist())
+            df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
+
+            yes_count = df.loc[candidates.index].query("gt == True").shape[0]
+            no_count = df.loc[candidates.index].query("gt == False").shape[0]
+            self._log(f"Iteration {iteration}: Evaluated {len(candidates)} documents. Yes: {yes_count}, No: {no_count}")
+
             # Train on labeled data
-            training_df = ldf.dropna(subset=["gt"]).copy()
+            training_df = df.dropna(subset=["gt"]).copy()
             training_df["gt"] = training_df["gt"].astype(bool)
             
             X_train = np.vstack(training_df["embedding"].values)
@@ -236,12 +213,12 @@ class ActiveLearner:
             # Check we have both classes
             if len(np.unique(y_train)) < 2:
                 # Add farthest unlabeled as negatives
-                unlabeled = ldf[real_docs_mask & ldf["gt"].isna()]
+                unlabeled = df[not_is_synthetic & df["gt"].isna()]
                 if len(unlabeled) > 0:
                     n_add = max(1, int(y_train.sum()))
                     farthest = unlabeled.nlargest(n_add, "distance_to_centroid")
-                    ldf.loc[farthest.index, "gt"] = False
-                    training_df = ldf.dropna(subset=["gt"]).copy()
+                    df.loc[farthest.index, "gt"] = False
+                    training_df = df.dropna(subset=["gt"]).copy()
                     training_df["gt"] = training_df["gt"].astype(bool)
                     X_train = np.vstack(training_df["embedding"].values)
                     y_train = training_df["gt"].values
@@ -254,86 +231,47 @@ class ActiveLearner:
             # Train classifier
             classifier = LogisticRegressionClassifier(c=self.c_value)
             classifier.fit(X_train, y_train)
-            model = classifier.model
             
             # Predict
-            all_embeddings = np.vstack(ldf["embedding"].values)
-            ldf["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
-            ldf["prediction_binary"] = ldf["prediction"] > 0.5
-            ldf["uncertainty"] = (ldf["prediction"] - 0.5).abs()
+            all_embeddings = np.vstack(df["embedding"].values)
+            df["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
+            df["prediction_binary"] = df["prediction"] > 0.5
+            df["confidence"] = (df["prediction"] - 0.5).abs()
             
             dist_dict = training_df["gt"].value_counts().to_dict()
-            pred_dict = ldf.loc[real_docs_mask, "prediction_binary"].value_counts().to_dict()
+            pred_dict = df.loc[not_is_synthetic, "prediction_binary"].value_counts().to_dict()
             self._log(f"Iteration {iteration}: Trained with {dist_dict}. Predictions: {pred_dict}")
             
-            if iteration == self.n_iterations:
-                break
-            
             # Early stopping
-            curr_pos_idx = set(ldf.index[real_docs_mask & ldf["prediction_binary"]])
-            if prev_pos_idx is not None:
-                flipped = curr_pos_idx.symmetric_difference(prev_pos_idx)
-                denom = len(curr_pos_idx | prev_pos_idx)
-                flip_rate = len(flipped) / denom if denom > 0 else 0.0
+            positives = set(df.index[not_is_synthetic & df["prediction_binary"]])
+            if prev_positives is not None:
+                flipped = len(positives ^ prev_positives)
+                total = len(positives | prev_positives)
+                flip_rate = flipped / total if total > 0 else 0
                 self._log(f"Flip rate: {flip_rate*100:.2f}%")
                 if flip_rate < early_stop_threshold:
                     self._log(f"Early stop (flip-rate < {early_stop_threshold*100:.1f}%)")
                     break
-            prev_pos_idx = curr_pos_idx.copy()
+            prev_positives = positives.copy()
             
-            # Select next batch
-            unlabeled = ldf[real_docs_mask & ldf["gt"].isna()]
+            # Select next candidates
+            unlabeled = df[not_is_synthetic & df["gt"].isna()]
             if len(unlabeled) == 0:
-                self._log("All documents labeled.")
+                self._log("All documents labeled, stopping.")
                 break
             
-            to_evaluate = select_stratified_diverse(unlabeled, self.n_eval_per_iteration)
-            if len(to_evaluate) == 0:
+            candidates = select_stratified_diverse(unlabeled, self.n_eval_per_iteration)
+            if len(candidates) == 0:
+                self._log("No candidates found, stopping.")
                 break
-            
-            eval_results = self.evaluation_llm.evaluate(
-                to_evaluate[text_column].tolist(),
-                query,
-                self.evaluation_query
-            )
-            if eval_results is None:
-                self._log("LLM evaluation failed, stopping.")
-                break
-            
-            ldf.loc[to_evaluate.index, "gt"] = pd.array(eval_results, dtype="boolean")
-            
-            yes_count = ldf.loc[to_evaluate.index].query("gt == True").shape[0]
-            no_count = ldf.loc[to_evaluate.index].query("gt == False").shape[0]
-            self._log(f"Iteration {iteration}: Labeled {len(to_evaluate)}. Yes: {yes_count}, No: {no_count}")
-        
-        # Final predictions (use last trained classifier)
-        if classifier is None:
-            # Train one final classifier if we don't have one
-            training_df = ldf.dropna(subset=["gt"]).copy()
-            if len(training_df) > 0:
-                training_df["gt"] = training_df["gt"].astype(bool)
-                X_train = np.vstack(training_df["embedding"].values)
-                y_train = training_df["gt"].values
-                if len(np.unique(y_train)) >= 2:
-                    classifier = LogisticRegressionClassifier(c=self.c_value)
-                    classifier.fit(X_train, y_train)
-                    model = classifier.model
-        
-        if classifier is None:
-            raise ValueError("Could not train classifier - insufficient labeled data")
-        
-        all_embeddings = np.vstack(ldf["embedding"].values)
-        ldf["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
-        ldf["prediction_binary"] = ldf["prediction"] > 0.5
-        
-        # Filter for positive items
-        real_results = ldf.loc[real_docs_mask].copy()
-        positive_results = real_results[real_results["prediction_binary"] == True].copy()
-        
+
+        # Keep only real documents with a positive prediction
+        positives = df.loc[not_is_synthetic & df['prediction_binary']]
+
         # Add score column
-        results_df = self.df.loc[positive_results.index].copy()
-        results_df["score"] = positive_results["prediction"].values
-        
+        results_df = self.df.loc[positives.index].copy()
+        results_df["score"] = positives["prediction"]
+
         # Sort by score
         results_df = results_df.sort_values("score", ascending=False)
         
@@ -343,27 +281,23 @@ class ActiveLearner:
         self._log(f"Saved results to {results_path}")
         
         # Save model
-        if model:
+        if classifier.model:
             model_path = os.path.join(session_dir, "model.pkl")
             with open(model_path, "wb") as f:
-                pickle.dump(model, f)
+                pickle.dump(classifier.model, f)
             self._log(f"Saved model to {model_path}")
         
         # Save parameters
         elapsed = time.time() - start_time
         params = {
             "session_id": session_id,
-            "dataset_path": self.dataset_path,
+            "index_name": self.index_name,
+            "document_type": self.document_type,
             "query": query,
-            "text_column": text_column,
-            "embedding_model": self.embedding_service.get_model_info(),
-            "generation_llm_model": {"provider": "openai", "model": self.generation_llm.model},
-            "evaluation_llm_model": {"provider": "openai", "model": self.evaluation_llm.model},
             "n_synthetic_documents": self.n_synthetic_documents,
             "n_nearest_start": self.n_nearest_start,
             "n_iterations": self.n_iterations,
             "n_eval_per_iteration": self.n_eval_per_iteration,
-            "evaluation_query": self.evaluation_query,
             "execution_times": {
                 "total_seconds": elapsed
             },
