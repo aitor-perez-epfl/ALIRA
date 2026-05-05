@@ -102,11 +102,6 @@ def search(index_name: str, text: Union[str, list[str]], document_type: Optional
     elif isinstance(document_type, str):
         document_type = [document_type]
 
-    if document_type:
-        query = {"terms": {"type": document_type}}
-    else:
-        query = {"match_all": {}}
-
     body = {
         "_source": {"includes": ["id", "type", "name", "text", "embedding"]},
         "size": size,
@@ -118,13 +113,13 @@ def search(index_name: str, text: Union[str, list[str]], document_type: Optional
                             {
                                 "neural": {
                                     "embedding": {
-                                        "query_text": text,
+                                        "query_text": query_text,
                                         "model_id": EMBEDDING_MODEL_ID,
                                         "k": size,
                                     }
                                 }
                             }
-                            for text in query
+                            for query_text in text
                         ]
                     }
                 }]
@@ -139,8 +134,9 @@ def search(index_name: str, text: Union[str, list[str]], document_type: Optional
 
 
 if __name__ == "__main__":
-    r = fetch_all(index_name='test2', document_type='professor')
-    print(len(r["hits"]["hits"]))
+    # r = fetch_all(index_name='test2', document_type='publication')
+    # print(len(r["hits"]["hits"]))
 
     r = search(index_name='test2', text='robotics', document_type='publication')
-    print(len(r["hits"]["hits"]))
+    for hit in r["hits"]["hits"]:
+        print(hit["_source"])
