@@ -4,7 +4,8 @@ from opensearchpy import OpenSearch
 
 from config import config
 
-EMBEDDING_MODEL_ID = "41_9BZ0BrpQLIV_1Av_A"
+# EMBEDDING_MODEL_ID = "41_9BZ0BrpQLIV_1Av_A"
+EMBEDDING_MODEL_ID = "1qybAp4BjzNfTND26ePS"
 
 client = OpenSearch(
     hosts=[{"host": "localhost", "port": 9200}],
@@ -37,7 +38,7 @@ def fetch_all(index_name: str, document_type: Optional[Union[str, list[str]]] = 
     size = client.count(index=index_name)["count"]
 
     # We need to paginate if size > page_size
-    page_size = 10_000
+    page_size = 500
     needs_pagination = size > page_size
 
     if document_type:

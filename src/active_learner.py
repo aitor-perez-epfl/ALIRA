@@ -4,16 +4,16 @@ import time
 import numpy as np
 import pandas as pd
 from uuid import uuid4
-import pickle
+import skops.io as sio
 from pathlib import Path
 from sklearn.metrics.pairwise import euclidean_distances
 from sklearn.cluster import MiniBatchKMeans
 from dotenv import load_dotenv
 
 from alira.classifiers import LogisticRegressionClassifier
-from alira.llms import generate_documents, evaluate_documents
+from alira.llms import generate_documents, evaluate_documents, send_embedding_request
 
-from alira.opensearch import fetch_all, embed
+from alira.opensearch import fetch_all
 
 # Load environment variables from .env file at project root
 env_path = Path(__file__).parent.parent / '.env'
@@ -31,7 +31,6 @@ def select_stratified_diverse(df: pd.DataFrame, n_samples: int) -> pd.DataFrame:
 
     df = df.copy()
 
-    # Allocate budget across zones
     zones = [
         (df[df["prediction"] > 0.7], 0.4),  # 40% high confidence positive
         (df[df["prediction"].between(0.3, 0.7)], 0.4),  # 40% uncertain
@@ -40,9 +39,10 @@ def select_stratified_diverse(df: pd.DataFrame, n_samples: int) -> pd.DataFrame:
 
     selected = []
     for zone_df, fraction in zones:
-        n_zone = max(1, int(n_samples * fraction))
         if len(zone_df) == 0:
             continue
+
+        n_zone = max(1, int(n_samples * fraction))
 
         # Use clustering for diversity within zone
         n_clusters = min(n_zone, len(zone_df))
@@ -108,7 +108,7 @@ class ActiveLearner:
 
     def _fetch(self):
         # Fetch data from OpenSearch index
-        self._log(f"Fetching documents with type {self.document_type}...")
+        self._log(f"Fetching documents with type `{self.document_type}`...")
 
         response = fetch_all(self.index_name, document_type=self.document_type)
         hits = response['hits']['hits']
@@ -157,7 +157,7 @@ class ActiveLearner:
         
         # Embed synthetic documents
         self._log("Embedding synthetic documents...")
-        synthetic_embeddings = embed(synthetic_documents)
+        synthetic_embeddings = send_embedding_request(synthetic_documents)
         synthetic_embeddings = np.array(synthetic_embeddings)
         self._log(f"Embedded {len(synthetic_embeddings)} synthetic documents")
 
@@ -178,16 +178,22 @@ class ActiveLearner:
         # Combine both dataframes
         df = pd.concat([synthetic_df, documents_df])
 
-        # Select initial candidates to evaluate as the closest to the synthetic centroid
+        # Compute distance to synthetic centroid
         all_embeddings = np.vstack(df["embedding"].values)
         synthetic_centroid = np.mean(synthetic_embeddings, axis=0).reshape(1, -1)
         synthetic_centroid = synthetic_centroid / np.linalg.norm(synthetic_centroid)
-        df["distance_to_centroid"] = euclidean_distances(all_embeddings, synthetic_centroid).ravel()
+        df["cosine_similarity"] = all_embeddings @ synthetic_centroid.T
+
+        # A priori probabilities are linear and evenly distributed on [0, 1] based on the cosine_similarity order
+        df["prediction"] = df['cosine_similarity'].rank() / len(df)
+        df["prediction_binary"] = df["prediction"] > 0.5
+        df["confidence"] = (df["prediction"] - 0.5).abs()
 
         not_is_synthetic = ~df["is_synthetic"]
 
-        self._log(f"Selecting the closest {self.n_nearest_start} documents to the synthetic centroid as candidates to evaluate...")
-        candidates = df.loc[not_is_synthetic].nsmallest(self.n_nearest_start, "distance_to_centroid")
+        # self._log(f"Selecting the closest {self.n_nearest_start} documents to the synthetic centroid as candidates to evaluate...")
+        # candidates = df.loc[not_is_synthetic].nsmallest(self.n_nearest_start, "distance_to_centroid")
+        candidates = select_stratified_diverse(df.loc[not_is_synthetic], self.n_eval_per_iteration)
 
         # Active Learning loop
         self._log("Starting active learning loop...")
@@ -274,17 +280,18 @@ class ActiveLearner:
 
         # Sort by score
         results_df = results_df.sort_values("score", ascending=False)
+
+        print(results_df)
         
         # Save results
-        results_path = os.path.join(session_dir, "results.parquet")
-        results_df.to_parquet(results_path, index=False)
+        results_path = os.path.join(session_dir, "results.csv")
+        results_df.drop(columns=['embedding']).to_csv(results_path, index=False)
         self._log(f"Saved results to {results_path}")
         
         # Save model
         if classifier.model:
-            model_path = os.path.join(session_dir, "model.pkl")
-            with open(model_path, "wb") as f:
-                pickle.dump(classifier.model, f)
+            model_path = os.path.join(session_dir, "model.skops")
+            sio.dump(classifier.model, model_path)
             self._log(f"Saved model to {model_path}")
         
         # Save parameters

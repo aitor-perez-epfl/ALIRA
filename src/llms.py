@@ -7,6 +7,12 @@ from openai import OpenAI
 from alira.config import config
 
 
+def send_embedding_request(texts: list[str]) -> list[list[float]]:
+    rcp_client = OpenAI(base_url=config['RCP_BASE_URL'], api_key=config['RCP_API_KEY'])
+    response = rcp_client.embeddings.create(model=config['RCP_EMBEDDING_MODEL'], input=texts)
+    return [item.embedding for item in response.data]
+
+
 def send_llm_request(messages, response_format=None):
     if response_format:
         response_format_schema = {
