@@ -23,9 +23,8 @@ class LogisticRegressionClassifier(AbstractClassifier):
         self.c = c
         self.model = LogisticRegression(
             C=c,
-            l1_ratio=0,
-            max_iter=10000,
-            solver="saga",
+            max_iter=1000,
+            solver="lbfgs",
             class_weight="balanced"
         )
     

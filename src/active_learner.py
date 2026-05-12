@@ -70,13 +70,10 @@ class ActiveLearner:
         self,
         index_name: str,
         document_type: str,
-        generation_llm_model: str = "gpt-4o-mini",
-        evaluation_llm_model: str = "gpt-5.2",
         n_synthetic_documents: int = 10,
-        n_nearest_start: int = 40,
-        min_iterations: int = 5,
-        max_iterations: int = 15,
-        n_eval_per_iteration: int = 20,
+        min_iterations: int = 3,
+        max_iterations: int = 20,
+        n_eval_per_iteration: int = 30,
         c_value: float = 1.0,
     ):
         """
@@ -85,10 +82,7 @@ class ActiveLearner:
         Args:
             index_name: OpenSearch index where to fetch documents from.
             document_types: Type of the documents to include in active learner.
-            generation_llm_model: Generation LLM model name
-            evaluation_llm_model: Evaluation LLM model name
             n_synthetic_documents: Number of synthetic documents to generate
-            n_nearest_start: Number of nearest docs for initial labeling
             min_iterations: Minimum number of iterations before early stopping is evaluated
             max_iterations: Maximum number of active learning iterations
             n_eval_per_iteration: Number of docs to evaluate per iteration
@@ -99,7 +93,6 @@ class ActiveLearner:
         self.index_name = index_name
         self.document_type = document_type
         self.n_synthetic_documents = n_synthetic_documents
-        self.n_nearest_start = n_nearest_start
         self.min_iterations = min_iterations
         self.max_iterations = max_iterations
         self.n_eval_per_iteration = n_eval_per_iteration
@@ -123,9 +116,12 @@ class ActiveLearner:
 
     def _log(self, message: str):
         """Log message to console and file."""
-        print(message)
+
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[{now}] {message}")
+
         if self.log_file:
-            self.log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{message}\n")
+            self.log_file.write(f"{now}\t{message}\n")
             self.log_file.flush()
         
     def classify(self, query: str, output_dir: str = "results"):
@@ -202,10 +198,13 @@ class ActiveLearner:
         self._log("Starting active learning loop...")
         classifier = None
         prev_positives = None
+        prev_predictions = None
         early_stop_threshold = 0.02
-        stable = False
+        uncertain_rmse_early_stop_threshold = 0.01
+        pos_rmse_early_stop_threshold = 0.01
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
+            self._log(f"Iteration {iteration}: Evaluating {len(candidates)} documents...")
             evaluations = evaluate_documents(topic=query, texts=candidates["text"].tolist())
             df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
@@ -239,45 +238,60 @@ class ActiveLearner:
                 continue
             
             # Train classifier
+            dist_dict = training_df["gt"].value_counts().to_dict()
+            self._log(f"Iteration {iteration}: Training classifier on {len(y_train)} documents ({dist_dict}) labeled documents...")
             classifier = LogisticRegressionClassifier(c=self.c_value)
             classifier.fit(X_train, y_train)
+            self._log(f"Iteration {iteration}: Trained classifier on {len(y_train)} documents ({dist_dict}) labeled documents.")
             
             # Predict
-            all_embeddings = np.vstack(df["embedding"].values)
+            self._log(f"Iteration {iteration}: Predicting all documents with freshly trained classifier...")
             df["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
             df["prediction_binary"] = df["prediction"] > 0.5
             df["confidence"] = (df["prediction"] - 0.5).abs()
-            
-            dist_dict = training_df["gt"].value_counts().to_dict()
             pred_dict = df.loc[not_is_synthetic, "prediction_binary"].value_counts().to_dict()
-            self._log(f"Iteration {iteration}: Trained with {dist_dict}. Predictions: {pred_dict}")
-            
+            self._log(f"Iteration {iteration}: Predicted all documents: {pred_dict}")
+
             # Early stopping
             positives = set(df.index[not_is_synthetic & df["prediction_binary"]])
+            predictions = df.loc[not_is_synthetic, 'prediction'].values
             if prev_positives is not None and iteration > self.min_iterations:
                 flipped = len(positives ^ prev_positives)
                 total = len(positives | prev_positives)
                 flip_rate = flipped / total if total > 0 else 0
                 self._log(f"Flip rate: {flip_rate*100:.2f}%")
-                if flip_rate < early_stop_threshold:
-                    if stable:
-                        self._log(f"Early stop (flip-rate < {early_stop_threshold*100:.1f}%)")
-                        break
-                    stable = True
-                else:
-                    stable = False
+
+                uncertain = (
+                    ((predictions >= 0.3) & (predictions <= 0.7)) |
+                    ((prev_predictions >= 0.3) & (prev_predictions <= 0.7))
+                )
+                pos = (
+                    (predictions >= 0.5) | (prev_predictions >= 0.5)
+                )
+                uncertain_rmse = np.sqrt(np.mean((predictions[uncertain] - prev_predictions[uncertain]) ** 2)) if uncertain.sum() > 0 else 0.0
+                pos_rmse = np.sqrt(np.mean((predictions[pos] - prev_predictions[pos]) ** 2)) if pos.sum() > 0 else 0.0
+                self._log(f"Uncertain zone RMSE: {uncertain_rmse:.4f}")
+                self._log(f"Positive zone RMSE: {pos_rmse:.4f}")
+
+                if flip_rate < early_stop_threshold or uncertain_rmse < uncertain_rmse_early_stop_threshold or pos_rmse < pos_rmse_early_stop_threshold:
+                    self._log(f"Early stop (flip-rate: {flip_rate*100:.2f}%, uncertain RMSE: {uncertain_rmse:.4f}, pos RMSE: {pos_rmse:.4f})")
+                    break
             prev_positives = positives.copy()
+            prev_predictions = predictions.copy()
             
             # Select next candidates
-            unlabeled = df[not_is_synthetic & df["gt"].isna()]
-            if len(unlabeled) == 0:
-                self._log("All documents labeled, stopping.")
-                break
-            
-            candidates = select_stratified_diverse(unlabeled, self.n_eval_per_iteration)
-            if len(candidates) == 0:
-                self._log("No candidates found, stopping.")
-                break
+            if iteration < self.max_iterations:
+                self._log(f"Iteration {iteration}: Selecting candidates for next iteration...")
+                unlabeled = df[not_is_synthetic & df["gt"].isna()]
+                if len(unlabeled) == 0:
+                    self._log("All documents labeled, stopping.")
+                    break
+
+                candidates = select_stratified_diverse(unlabeled, self.n_eval_per_iteration)
+                if len(candidates) == 0:
+                    self._log("No candidates found, stopping.")
+                    break
+                self._log(f"Iteration {iteration}: Selected {len(candidates)} candidates to evaluate...")
 
         # Keep only real documents with a positive prediction
         positives = df.loc[not_is_synthetic & df['prediction_binary']]
@@ -310,7 +324,6 @@ class ActiveLearner:
             "document_type": self.document_type,
             "query": query,
             "n_synthetic_documents": self.n_synthetic_documents,
-            "n_nearest_start": self.n_nearest_start,
             "min_iterations": self.min_iterations,
             "max_iterations": self.max_iterations,
             "n_eval_per_iteration": self.n_eval_per_iteration,

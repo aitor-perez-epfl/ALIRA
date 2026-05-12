@@ -1,7 +1,7 @@
 """
 Lab Explorer Twin
 
-Example replica of Lab Explorer using a simpler ALIRA version where data and embeddings come from OpenSearch.
+Script trying to replicate Lab Explorer using a simpler ALIRA version that doesn't handle the data, instead importing it from OpenSearch.
 """
 
 import numpy as np
@@ -15,7 +15,7 @@ index_name = "test3"
 document_type = "publication"
 query = "machine learning"
 
-# Step 2: Find publications related to the query
+# Find publications related to the query
 print(f"Preparing Active Learner for documents with type `{document_type}`...")
 learner = ActiveLearner(
     index_name=index_name,
