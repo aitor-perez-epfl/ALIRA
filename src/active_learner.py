@@ -74,7 +74,8 @@ class ActiveLearner:
         evaluation_llm_model: str = "gpt-5.2",
         n_synthetic_documents: int = 10,
         n_nearest_start: int = 40,
-        n_iterations: int = 15,
+        min_iterations: int = 5,
+        max_iterations: int = 15,
         n_eval_per_iteration: int = 20,
         c_value: float = 1.0,
     ):
@@ -88,7 +89,8 @@ class ActiveLearner:
             evaluation_llm_model: Evaluation LLM model name
             n_synthetic_documents: Number of synthetic documents to generate
             n_nearest_start: Number of nearest docs for initial labeling
-            n_iterations: Maximum number of active learning iterations
+            min_iterations: Minimum number of iterations before early stopping is evaluated
+            max_iterations: Maximum number of active learning iterations
             n_eval_per_iteration: Number of docs to evaluate per iteration
             c_value: C parameter for LogisticRegression
         """
@@ -98,7 +100,8 @@ class ActiveLearner:
         self.document_type = document_type
         self.n_synthetic_documents = n_synthetic_documents
         self.n_nearest_start = n_nearest_start
-        self.n_iterations = n_iterations
+        self.min_iterations = min_iterations
+        self.max_iterations = max_iterations
         self.n_eval_per_iteration = n_eval_per_iteration
         self.c_value = c_value
         self.log_file = None
@@ -200,7 +203,7 @@ class ActiveLearner:
         classifier = None
         prev_positives = None
         early_stop_threshold = 0.02
-        for iteration in range(1, self.n_iterations + 1):
+        for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
             evaluations = evaluate_documents(topic=query, texts=candidates["text"].tolist())
             df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
@@ -250,7 +253,7 @@ class ActiveLearner:
             
             # Early stopping
             positives = set(df.index[not_is_synthetic & df["prediction_binary"]])
-            if prev_positives is not None:
+            if prev_positives is not None and iteration > self.min_iterations:
                 flipped = len(positives ^ prev_positives)
                 total = len(positives | prev_positives)
                 flip_rate = flipped / total if total > 0 else 0
@@ -303,7 +306,8 @@ class ActiveLearner:
             "query": query,
             "n_synthetic_documents": self.n_synthetic_documents,
             "n_nearest_start": self.n_nearest_start,
-            "n_iterations": self.n_iterations,
+            "min_iterations": self.min_iterations,
+            "max_iterations": self.max_iterations,
             "n_eval_per_iteration": self.n_eval_per_iteration,
             "execution_times": {
                 "total_seconds": elapsed
