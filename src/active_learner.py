@@ -203,6 +203,7 @@ class ActiveLearner:
         classifier = None
         prev_positives = None
         early_stop_threshold = 0.02
+        stable = False
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
             evaluations = evaluate_documents(topic=query, texts=candidates["text"].tolist())
@@ -259,8 +260,12 @@ class ActiveLearner:
                 flip_rate = flipped / total if total > 0 else 0
                 self._log(f"Flip rate: {flip_rate*100:.2f}%")
                 if flip_rate < early_stop_threshold:
-                    self._log(f"Early stop (flip-rate < {early_stop_threshold*100:.1f}%)")
-                    break
+                    if stable:
+                        self._log(f"Early stop (flip-rate < {early_stop_threshold*100:.1f}%)")
+                        break
+                    stable = True
+                else:
+                    stable = False
             prev_positives = positives.copy()
             
             # Select next candidates
