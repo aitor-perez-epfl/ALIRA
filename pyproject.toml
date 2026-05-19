@@ -1,10 +1,21 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "alira"
 version = "0.1.0"
+description = "Active Learning Iterative Retrieval Agent – combines RAG with active learning to iteratively discover relevant documents from large corpora using LLM validation and classifier refinement."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "openai",
+    "pandas",
+    "pydantic",
+    "scikit-learn",
+    "skops",
+]
 
-[tool.setuptools.package-dir]
-"alira" = "src"
+[tool.hatch.build.targets.wheel]
+packages = ["src/alira"]

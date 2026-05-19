@@ -4,12 +4,12 @@ from pydantic import BaseModel, Field, RootModel
 
 from openai import OpenAI
 
-from alira.config import config
+from alira.config import CONFIG
 
 
 def send_embedding_request(texts: list[str]) -> list[list[float]]:
-    rcp_client = OpenAI(base_url=config['RCP_BASE_URL'], api_key=config['RCP_API_KEY'])
-    response = rcp_client.embeddings.create(model=config['RCP_EMBEDDING_MODEL'], input=texts)
+    rcp_client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
+    response = rcp_client.embeddings.create(model=CONFIG['RCP_EMBEDDING_MODEL'], input=texts)
     return [item.embedding for item in response.data]
 
 
@@ -27,8 +27,8 @@ def send_llm_request(messages, response_format=None):
         response_format_schema = None
 
     # Send request
-    rcp_client = OpenAI(base_url=config['RCP_BASE_URL'], api_key=config['RCP_API_KEY'])
-    response = rcp_client.chat.completions.create(model=config['RCP_BASE_MODEL'], messages=messages, response_format=response_format_schema)
+    rcp_client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
+    response = rcp_client.chat.completions.create(model=CONFIG['RCP_BASE_MODEL'], messages=messages, response_format=response_format_schema)
     content = response.choices[0].message.content.strip()
 
     # Return parsed result if structured output
