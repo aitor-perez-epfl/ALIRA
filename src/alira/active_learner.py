@@ -16,6 +16,8 @@ pd.set_option('display.max_rows', 500)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
+_N_FORMAT_EXAMPLES = 5
+
 
 def select_stratified_diverse(df: pd.DataFrame, n_samples: int) -> pd.DataFrame:
     """Stratified by confidence + diverse within each stratum."""
@@ -66,31 +68,44 @@ class ActiveLearner:
         max_iterations: int = 20,
         n_eval_per_iteration: int = 30,
         c_value: float = 1.0,
+        early_stop_threshold: float = 0.02,
+        uncertain_rmse_threshold: float = 0.01,
+        pos_rmse_threshold: float = 0.01,
+        generation_prompt: str | None = None,
+        evaluation_prompt: str | None = None,
     ):
         """
-        Initialize active learner with dataset.
-
         Args:
-            n_synthetic_documents: Number of synthetic documents to generate
-            min_iterations: Minimum number of iterations before early stopping is evaluated
-            max_iterations: Maximum number of active learning iterations
-            n_eval_per_iteration: Number of docs to evaluate per iteration
+            n_synthetic_documents: Number of synthetic documents to generate for bootstrapping
+            min_iterations: Minimum iterations before early stopping is evaluated
+            max_iterations: Maximum active learning iterations
+            n_eval_per_iteration: Documents evaluated per iteration
             c_value: C parameter for LogisticRegression
+            early_stop_threshold: Max flip rate to consider predictions stable
+            uncertain_rmse_threshold: Max RMSE in the uncertain zone (0.3–0.7) to consider stable
+            pos_rmse_threshold: Max RMSE in the positive zone (>=0.5) to consider stable
+            generation_prompt: Replaces the default synthetic document generation prompt
+            evaluation_prompt: Replaces the default document evaluation prompt
         """
-
-        # Store parameters
         self.n_synthetic_documents = n_synthetic_documents
         self.min_iterations = min_iterations
         self.max_iterations = max_iterations
         self.n_eval_per_iteration = n_eval_per_iteration
         self.c_value = c_value
+        self.early_stop_threshold = early_stop_threshold
+        self.uncertain_rmse_threshold = uncertain_rmse_threshold
+        self.pos_rmse_threshold = pos_rmse_threshold
+        self.generation_prompt = generation_prompt
+        self.evaluation_prompt = evaluation_prompt
 
-    def fit(self, query: str, output_dir: str = "results"):
+    def fit(self, df: pd.DataFrame, query: str, output_dir: str = "results"):
         """
         Run active learning classification.
 
         Args:
-            query: Search query/topic (used directly)
+            df: Corpus with a required `text` column and an optional `embedding` column.
+                If embeddings are absent they are generated at the start of fit.
+            query: Search query/topic
             output_dir: Output directory for results
 
         Returns:
@@ -99,7 +114,6 @@ class ActiveLearner:
         start_time = time.time()
         query = query.strip()[:15000]
 
-        # Setup session
         session_id = str(uuid4())
         session_dir = os.path.join(output_dir, session_id)
         os.makedirs(session_dir, exist_ok=True)
@@ -109,23 +123,33 @@ class ActiveLearner:
 
         logger.info(f"Starting classification for query: {query}")
 
-        # Generate synthetic documents
+        df = df.copy()
+        if "embedding" not in df.columns:
+            logger.info(f"Generating embeddings for {len(df)} documents...")
+            df["embedding"] = send_embedding_request(df["text"].tolist())
+            logger.info("Embeddings generated.")
+
+        non_empty = df[df["text"].str.strip() != ""]["text"]
+        format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
+
         logger.info(f"Generating {self.n_synthetic_documents} synthetic documents...")
-        synthetic_documents = generate_documents(query, self.n_synthetic_documents, self.document_type)
+        synthetic_documents = generate_documents(
+            query, self.n_synthetic_documents, format_examples, self.generation_prompt
+        )
         logger.info(f"Generated {len(synthetic_documents)} synthetic documents")
 
-        # Embed synthetic documents
         logger.info("Embedding synthetic documents...")
         synthetic_embeddings = send_embedding_request(synthetic_documents)
         synthetic_embeddings = np.array(synthetic_embeddings)
         logger.info(f"Embedded {len(synthetic_embeddings)} synthetic documents")
 
-        # Build documents dataframe
-        documents_df = self.df[['text', 'embedding']].copy()
+        n_documents = len(df)
+        original_columns = list(df.columns)
+
+        documents_df = df
         documents_df["gt"] = pd.NA
         documents_df["is_synthetic"] = False
 
-        # Build synthetic dataframe
         synthetic_df = pd.DataFrame({
             "text": synthetic_documents,
             "embedding": [synthetic_embeddings[i] for i in range(len(synthetic_documents))],
@@ -159,13 +183,14 @@ class ActiveLearner:
         classifier = None
         prev_positives = None
         prev_predictions = None
+        iteration = 0
         early_stop_threshold = 0.02
         uncertain_rmse_early_stop_threshold = 0.01
         pos_rmse_early_stop_threshold = 0.01
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
             logger.info(f"Iteration {iteration}: Evaluating {len(candidates)} documents...")
-            evaluations = evaluate_documents(topic=query, texts=candidates["text"].tolist())
+            evaluations = evaluate_documents(topic=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
             df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
             yes_count = df.loc[candidates.index].query("gt == True").shape[0]
@@ -185,7 +210,7 @@ class ActiveLearner:
                 unlabeled = df[not_is_synthetic & df["gt"].isna()]
                 if len(unlabeled) > 0:
                     n_add = max(1, int(y_train.sum()))
-                    farthest = unlabeled.nlargest(n_add, "distance_to_centroid")
+                    farthest = unlabeled.nsmallest(n_add, "cosine_similarity")
                     df.loc[farthest.index, "gt"] = False
                     training_df = df.dropna(subset=["gt"]).copy()
                     training_df["gt"] = training_df["gt"].astype(bool)
@@ -256,22 +281,22 @@ class ActiveLearner:
         # Keep only real documents with a positive prediction
         positives = df.loc[not_is_synthetic & df['prediction_binary']]
 
-        # Add score column
-        results_df = self.df.loc[positives.index].copy()
-        results_df["score"] = positives["prediction"]
+        # Add score, prediction_binary and confidence columns from the classifier
+        results_df = positives[original_columns + ["prediction", "prediction_binary", "confidence"]].copy()
+        results_df = results_df.rename(columns={"prediction": "score"})
 
         # Sort by score
         results_df = results_df.sort_values("score", ascending=False)
 
-        print(results_df)
+        logger.info(f"\n{results_df.to_string()}")
 
         # Save results
         results_path = os.path.join(session_dir, "results.csv")
-        results_df.drop(columns=['embedding']).to_csv(results_path, index=False)
+        results_df.drop(columns=["embedding"], errors="ignore").to_csv(results_path, index=False)
         logger.info(f"Saved results to {results_path}")
 
         # Save model
-        if classifier.model:
+        if classifier is not None:
             model_path = os.path.join(session_dir, "model.skops")
             sio.dump(classifier.model, model_path)
             logger.info(f"Saved model to {model_path}")
@@ -289,9 +314,9 @@ class ActiveLearner:
                 "total_seconds": elapsed
             },
             "statistics": {
-                "total_items": len(self.df),
+                "total_items": n_documents,
                 "positive_items": len(results_df),
-                "negative_items": len(self.df) - len(results_df),
+                "negative_items": n_documents - len(results_df),
                 "iterations_completed": iteration
             },
             "model_info": {

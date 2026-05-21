@@ -8,8 +8,8 @@ from alira.config import CONFIG
 
 
 def send_embedding_request(texts: list[str]) -> list[list[float]]:
-    rcp_client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
-    response = rcp_client.embeddings.create(model=CONFIG['RCP_EMBEDDING_MODEL'], input=texts)
+    client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
+    response = client.embeddings.create(model=CONFIG['RCP_EMBEDDING_MODEL'], input=texts)
     return [item.embedding for item in response.data]
 
 
@@ -26,52 +26,81 @@ def send_llm_request(messages, response_format=None):
     else:
         response_format_schema = None
 
-    # Send request
-    rcp_client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
-    response = rcp_client.chat.completions.create(model=CONFIG['RCP_BASE_MODEL'], messages=messages, response_format=response_format_schema)
+
+    client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
+    response = client.chat.completions.create(
+        model=CONFIG['RCP_BASE_MODEL'],
+        messages=messages,
+        response_format=response_format_schema,
+        verbosity='high'
+    )
     content = response.choices[0].message.content.strip()
 
-    # Return parsed result if structured output
     if response_format:
         return response_format.model_validate_json(content)
 
-    # Return string otherwise
     return content
 
 
-def generate_documents(topic: str, n: int, document_type: str) -> list[str]:
-    """Generate synthetic documents of the given type about the given topic using an LLM."""
+def generate_documents(
+    query: str,
+    n: int,
+    examples: list[str],
+    prompt: str | None = None
+) -> list[str]:
+    """Generate n synthetic documents about query, using examples for format reference."""
 
-    prompt = f"""
-You are an expert in writing documents of the type `{document_type}` about a given topic.
-Produce a list of exactly {n} documents of the type `{document_type}` related to the topic "{topic}".
-Each should consist of a name or title and a brief representative piece of text (e.g. an abstract for a publication, a description for a grant, etc.).
+    if prompt is None:
+        examples_block = "\n\n---\n\n".join(
+            f"{example}"
+            for i, example in enumerate(examples)
+        )
+        prompt = f"""
+You are an expert generating texts related to a given topic. 
+Below are some randomly chosen example texts from a dataset.
+Your task is to produce a list of exactly {n} documents with the same format as the example texts, but so that all the texts you produce are related to the topic "{query}".
+Produce texts that could be extracted from the same dataset as the examples but somehow having filtered semantically by the given topic.
+Do not include the delimiters in your generated texts.
+
+Here are the examples:
+
+---
+
+{examples_block}
+
+---
 """
 
-    class Document(BaseModel):
-        name: str
-        description: str
+    class Text(BaseModel):
+        text: str
 
     messages = [{'role': 'user', 'content': prompt}]
-    list_model = RootModel[Annotated[List[Document], Field(min_length=n, max_length=n)]]
-    documents = send_llm_request(messages, response_format=list_model)
+    list_model = RootModel[Annotated[List[Text], Field(min_length=n, max_length=n)]]
+    texts = send_llm_request(messages, response_format=list_model)
 
-    documents = ['\n'.join([document.name, document.description]) for document in documents.root]
-
-    return documents
+    return [text.text for text in texts.root]
 
 
-def evaluate_documents(topic: str, texts: list) -> list:
-    """Evaluate whether each of the documents is related to the given topic using an LLM."""
+def evaluate_documents(
+    query: str,
+    texts: list[str],
+    prompt: str | None = None
+) -> list[bool]:
+    """Evaluate with an LLM whether each of the texts is related to query."""
 
     n = len(texts)
 
-    prompt = f"""
+    if n == 0:
+        return []
+
+    if prompt is None:
+        numbered = "\n".join(f"{i}. {text}" for i, text in enumerate(texts))
+        prompt = f"""
 You are an expert in classifying documents according to a given topic.
-Classify each document as *related* (True) or *not related* (False) with the topic "{topic}".
+Classify each document as *related* (True) or *not related* (False) with the topic "{query}".
 Produce a list of exactly {n} bools, one for each document, in the same order as the documents.
 
-{"\n".join(f"{i}. {text}" for i, text in enumerate(texts))}
+{numbered}
 """
 
     messages = [{'role': 'user', 'content': prompt}]
@@ -79,16 +108,3 @@ Produce a list of exactly {n} bools, one for each document, in the same order as
     evaluations = send_llm_request(messages, response_format=list_model)
 
     return evaluations.root
-
-
-if __name__ == '__main__':
-    topic = 'machine learning'
-    n = 3
-
-    publications = generate_documents(topic, n, 'publication')
-
-    print(publications)
-
-    evaluations = evaluate_documents(topic, publications)
-
-    print(evaluations)
