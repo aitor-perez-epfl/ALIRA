@@ -7,6 +7,8 @@ with active learning to iteratively discover relevant documents from large
 corpora using LLM validation and classifier refinement.
 """
 
+from alira.active_learner import ActiveLearner
+
 # from .dataset_builder import DatasetBuilder
 # from .active_learner import ActiveLearner
 #
