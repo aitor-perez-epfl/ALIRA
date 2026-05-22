@@ -26,13 +26,11 @@ def send_llm_request(messages, response_format=None):
     else:
         response_format_schema = None
 
-
     client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
     response = client.chat.completions.create(
         model=CONFIG['RCP_BASE_MODEL'],
         messages=messages,
         response_format=response_format_schema,
-        verbosity='high'
     )
     content = response.choices[0].message.content.strip()
 
