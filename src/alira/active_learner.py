@@ -69,8 +69,8 @@ class ActiveLearner:
         n_eval_per_iteration: int = 30,
         c_value: float = 1.0,
         early_stop_threshold: float = 0.02,
-        uncertain_rmse_threshold: float = 0.01,
-        pos_rmse_threshold: float = 0.01,
+        uncertain_rmse_early_stop_threshold: float = 0.01,
+        pos_rmse_early_stop_threshold: float = 0.01,
         generation_prompt: str | None = None,
         evaluation_prompt: str | None = None,
     ):
@@ -82,8 +82,8 @@ class ActiveLearner:
             n_eval_per_iteration: Documents evaluated per iteration
             c_value: C parameter for LogisticRegression
             early_stop_threshold: Max flip rate to consider predictions stable
-            uncertain_rmse_threshold: Max RMSE in the uncertain zone (0.3–0.7) to consider stable
-            pos_rmse_threshold: Max RMSE in the positive zone (>=0.5) to consider stable
+            uncertain_rmse_early_stop_threshold: Max RMSE in the uncertain zone (0.3–0.7) to consider stable
+            pos_rmse_early_stop_threshold: Max RMSE in the positive zone (>=0.5) to consider stable
             generation_prompt: Replaces the default synthetic document generation prompt
             evaluation_prompt: Replaces the default document evaluation prompt
         """
@@ -93,8 +93,8 @@ class ActiveLearner:
         self.n_eval_per_iteration = n_eval_per_iteration
         self.c_value = c_value
         self.early_stop_threshold = early_stop_threshold
-        self.uncertain_rmse_threshold = uncertain_rmse_threshold
-        self.pos_rmse_threshold = pos_rmse_threshold
+        self.uncertain_rmse_early_stop_threshold = uncertain_rmse_early_stop_threshold
+        self.pos_rmse_early_stop_threshold = pos_rmse_early_stop_threshold
         self.generation_prompt = generation_prompt
         self.evaluation_prompt = evaluation_prompt
 
@@ -184,9 +184,6 @@ class ActiveLearner:
         prev_positives = None
         prev_predictions = None
         iteration = 0
-        early_stop_threshold = 0.02
-        uncertain_rmse_early_stop_threshold = 0.01
-        pos_rmse_early_stop_threshold = 0.01
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
             logger.info(f"Iteration {iteration}: Evaluating {len(candidates)} documents...")
@@ -258,7 +255,7 @@ class ActiveLearner:
                 logger.info(f"Uncertain zone RMSE: {uncertain_rmse:.4f}")
                 logger.info(f"Positive zone RMSE: {pos_rmse:.4f}")
 
-                if flip_rate < early_stop_threshold or uncertain_rmse < uncertain_rmse_early_stop_threshold or pos_rmse < pos_rmse_early_stop_threshold:
+                if flip_rate < self.early_stop_threshold or uncertain_rmse < self.uncertain_rmse_early_stop_threshold or pos_rmse < self.pos_rmse_early_stop_threshold:
                     logger.info(f"Early stop (flip-rate: {flip_rate*100:.2f}%, uncertain RMSE: {uncertain_rmse:.4f}, pos RMSE: {pos_rmse:.4f})")
                     break
             prev_positives = positives.copy()
