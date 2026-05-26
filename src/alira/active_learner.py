@@ -1,10 +1,6 @@
-import os
-import json
 import time
 import numpy as np
 import pandas as pd
-from uuid import uuid4
-import skops.io as sio
 
 from sklearn.cluster import MiniBatchKMeans
 
@@ -57,6 +53,69 @@ def select_stratified_diverse(df: pd.DataFrame, n_samples: int) -> pd.DataFrame:
     return df.loc[selected[:n_samples]]  # Trim to exact budget
 
 
+def select_candidates_to_evaluate(
+    df: pd.DataFrame, n_samples: int, cluster: bool = False
+) -> pd.DataFrame:
+    """Select candidates for evaluation using a confidence-based stratified sampling strategy.
+
+    This function divides the input data into three confidence zones based on the
+    'prediction' column and samples within each zone to ensure a balanced representation
+    of high-confidence positives, uncertain items, and likely negatives.
+
+    The sampling budget is allocated as follows:
+        - High confidence positive (prediction > 0.7): 30%
+        - Uncertain (prediction between 0.3 and 0.7): 40%
+        - Likely negative (prediction < 0.3): 30%
+
+    Args:
+        df (pd.DataFrame): DataFrame containing at least a 'prediction' column.
+            The index values are used to select the returned rows.
+        n_samples (int): Total number of samples to select.
+        cluster (bool): When False, samples randomly within each stratum. When True,
+            uses MiniBatchKMeans clustering on the 'embedding' column to pick one
+            item per cluster for diversity, similar to `select_stratified_diverse`.
+            Default is False.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing the selected candidate rows. If the
+            input is empty or n_samples is <= 0, returns an empty DataFrame.
+    """
+    if len(df) == 0 or n_samples <= 0:
+        return df.head(0)
+
+    zones = [
+        (df[df["prediction"] > 0.7], 0.3),       # 30% high confidence positive
+        (df[df["prediction"].between(0.3, 0.7)], 0.4),  # 40% uncertain
+        (df[df["prediction"] < 0.3], 0.3),       # 30% likely negative
+    ]
+
+    selected = []
+    for zone_df, fraction in zones:
+        if len(zone_df) == 0:
+            continue
+
+        n_zone = max(1, int(n_samples * fraction))
+
+        if cluster:
+            n_clusters = min(n_zone, len(zone_df))
+            if n_clusters > 1:
+                embeddings = np.vstack(zone_df["embedding"].values)
+                kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=42, n_init=3)
+                zone_df = zone_df.copy()
+                zone_df["cluster"] = kmeans.fit_predict(embeddings)
+
+                for c in range(n_clusters):
+                    cluster_items = zone_df[zone_df["cluster"] == c]
+                    if len(cluster_items) > 0:
+                        selected.append(cluster_items.sample(1).index[0])
+            else:
+                selected.extend(zone_df.sample(min(n_zone, len(zone_df))).index)
+        else:
+            selected.extend(zone_df.sample(min(n_zone, len(zone_df))).index)
+
+    return df.loc[selected[:n_samples]]  # Trim to exact budget
+
+
 class ActiveLearner:
     """Active learning classifier for document filtering."""
 
@@ -97,7 +156,7 @@ class ActiveLearner:
         self.generation_prompt = generation_prompt
         self.evaluation_prompt = evaluation_prompt
 
-    def fit(self, df: pd.DataFrame, query: str, output_dir: str = "results"):
+    def fit(self, df: pd.DataFrame, query: str):
         """
         Run active learning classification.
 
@@ -105,17 +164,12 @@ class ActiveLearner:
             df: Corpus with a required `text` column and an optional `embedding` column.
                 If embeddings are absent they are generated at the start of fit.
             query: Search query/topic
-            output_dir: Output directory for results
 
         Returns:
-            results_df (positive items with scores), session_dir, params_dict
+            results_df (positive items with scores), params_dict
         """
         start_time = time.time()
         query = query.strip()[:15000]
-
-        session_id = str(uuid4())
-        session_dir = os.path.join(output_dir, session_id)
-        os.makedirs(session_dir, exist_ok=True)
 
         print(f"Starting classification for query: {query}")
 
@@ -283,21 +337,9 @@ class ActiveLearner:
 
         print(f"\n{results_df.to_string()}")
 
-        # Save results
-        results_path = os.path.join(session_dir, "results.csv")
-        results_df.drop(columns=["embedding"], errors="ignore").to_csv(results_path, index=False)
-        print(f"Saved results to {results_path}")
-
-        # Save model
-        if classifier is not None:
-            model_path = os.path.join(session_dir, "model.skops")
-            sio.dump(classifier.model, model_path)
-            print(f"Saved model to {model_path}")
-
         # Save parameters
         elapsed = time.time() - start_time
         params = {
-            "session_id": session_id,
             "query": query,
             "n_synthetic_documents": self.n_synthetic_documents,
             "min_iterations": self.min_iterations,
@@ -319,10 +361,6 @@ class ActiveLearner:
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
         }
 
-        params_path = os.path.join(session_dir, "params.json")
-        with open(params_path, "w") as f:
-            json.dump(params, f, indent=2)
-        print(f"Saved parameters to {params_path}")
         print(f"Done! Time: {elapsed:.2f}s")
 
-        return results_df, session_dir, params
+        return results_df, params
