@@ -1,4 +1,6 @@
+import logging
 import time
+
 import numpy as np
 import pandas as pd
 
@@ -6,6 +8,8 @@ from sklearn.cluster import MiniBatchKMeans
 
 from alira.classifiers import LogisticRegressionClassifier
 from alira.llms import generate_documents, evaluate_documents, send_embedding_request
+
+logger = logging.getLogger(__name__)
 
 pd.set_option('display.max_rows', 500)
 pd.set_option('display.max_columns', 500)
@@ -171,27 +175,27 @@ class ActiveLearner:
         start_time = time.time()
         query = query.strip()[:15000]
 
-        print(f"Starting classification for query: {query}")
+        logger.info("Starting classification for query: %s", query)
 
         df = df.copy()
         if "embedding" not in df.columns:
-            print(f"Generating embeddings for {len(df)} documents...")
+            logger.info("Generating embeddings for %s documents...", len(df))
             df["embedding"] = send_embedding_request(df["text"].tolist())
-            print("Embeddings generated.")
+            logger.info("Embeddings generated.")
 
         non_empty = df[df["text"].str.strip() != ""]["text"]
         format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
 
-        print(f"Generating {self.n_synthetic_documents} synthetic documents...")
+        logger.info("Generating %s synthetic documents...", self.n_synthetic_documents)
         synthetic_documents = generate_documents(
             query, self.n_synthetic_documents, format_examples, self.generation_prompt
         )
-        print(f"Generated {len(synthetic_documents)} synthetic documents")
+        logger.info("Generated %s synthetic documents", len(synthetic_documents))
 
-        print("Embedding synthetic documents...")
+        logger.info("Embedding synthetic documents...")
         synthetic_embeddings = send_embedding_request(synthetic_documents)
         synthetic_embeddings = np.array(synthetic_embeddings)
-        print(f"Embedded {len(synthetic_embeddings)} synthetic documents")
+        logger.info("Embedded %s synthetic documents", len(synthetic_embeddings))
 
         n_documents = len(df)
         original_columns = list(df.columns)
@@ -229,20 +233,20 @@ class ActiveLearner:
         candidates = select_stratified_diverse(df.loc[not_is_synthetic], self.n_eval_per_iteration)
 
         # Active Learning loop
-        print("Starting active learning loop...")
+        logger.info("Starting active learning loop...")
         classifier = None
         prev_positives = None
         prev_predictions = None
         iteration = 0
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
-            print(f"Iteration {iteration}: Evaluating {len(candidates)} documents...")
+            logger.info("Iteration %s: Evaluating %s documents...", iteration, len(candidates))
             evaluations = evaluate_documents(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
             df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
             yes_count = df.loc[candidates.index].query("gt == True").shape[0]
             no_count = df.loc[candidates.index].query("gt == False").shape[0]
-            print(f"Iteration {iteration}: Evaluated {len(candidates)} documents. Yes: {yes_count}, No: {no_count}")
+            logger.info("Iteration %s: Evaluated %s documents. Yes: %s, No: %s", iteration, len(candidates), yes_count, no_count)
 
             # Train on labeled data
             training_df = df.dropna(subset=["gt"]).copy()
@@ -263,26 +267,26 @@ class ActiveLearner:
                     training_df["gt"] = training_df["gt"].astype(bool)
                     X_train = np.vstack(training_df["embedding"].values)
                     y_train = training_df["gt"].values
-                    print(f"Added {len(farthest)} distant docs as negatives")
+                    logger.info("Added %s distant docs as negatives", len(farthest))
 
             if len(np.unique(y_train)) < 2:
-                print(f"Iteration {iteration}: Skipping - need both classes")
+                logger.info("Iteration %s: Skipping - need both classes", iteration)
                 continue
 
             # Train classifier
             dist_dict = training_df["gt"].value_counts().to_dict()
-            print(f"Iteration {iteration}: Training classifier on {len(y_train)} documents ({dist_dict}) labeled documents...")
+            logger.info("Iteration %s: Training classifier on %s documents (%s) labeled documents...", iteration, len(y_train), dist_dict)
             classifier = LogisticRegressionClassifier(c=self.c_value)
             classifier.fit(X_train, y_train)
-            print(f"Iteration {iteration}: Trained classifier on {len(y_train)} documents ({dist_dict}) labeled documents.")
+            logger.info("Iteration %s: Trained classifier on %s documents (%s) labeled documents.", iteration, len(y_train), dist_dict)
 
             # Predict
-            print(f"Iteration {iteration}: Predicting all documents with freshly trained classifier...")
+            logger.info("Iteration %s: Predicting all documents with freshly trained classifier...", iteration)
             df["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
             df["prediction_binary"] = df["prediction"] > 0.5
             df["confidence"] = (df["prediction"] - 0.5).abs()
             pred_dict = df.loc[not_is_synthetic, "prediction_binary"].value_counts().to_dict()
-            print(f"Iteration {iteration}: Predicted all documents: {pred_dict}")
+            logger.info("Iteration %s: Predicted all documents: %s", iteration, pred_dict)
 
             # Early stopping
             positives = set(df.index[not_is_synthetic & df["prediction_binary"]])
@@ -291,7 +295,7 @@ class ActiveLearner:
                 flipped = len(positives ^ prev_positives)
                 total = len(positives | prev_positives)
                 flip_rate = flipped / total if total > 0 else 0
-                print(f"Flip rate: {flip_rate*100:.2f}%")
+                logger.info("Flip rate: %.2f%%", flip_rate * 100)
 
                 uncertain = (
                     ((predictions >= 0.3) & (predictions <= 0.7)) |
@@ -302,28 +306,28 @@ class ActiveLearner:
                 )
                 uncertain_rmse = np.sqrt(np.mean((predictions[uncertain] - prev_predictions[uncertain]) ** 2)) if uncertain.sum() > 0 else 0.0
                 pos_rmse = np.sqrt(np.mean((predictions[pos] - prev_predictions[pos]) ** 2)) if pos.sum() > 0 else 0.0
-                print(f"Uncertain zone RMSE: {uncertain_rmse:.4f}")
-                print(f"Positive zone RMSE: {pos_rmse:.4f}")
+                logger.info("Uncertain zone RMSE: %.4f", uncertain_rmse)
+                logger.info("Positive zone RMSE: %.4f", pos_rmse)
 
                 if flip_rate < self.early_stop_threshold or uncertain_rmse < self.uncertain_rmse_early_stop_threshold or pos_rmse < self.pos_rmse_early_stop_threshold:
-                    print(f"Early stop (flip-rate: {flip_rate*100:.2f}%, uncertain RMSE: {uncertain_rmse:.4f}, pos RMSE: {pos_rmse:.4f})")
+                    logger.info("Early stop (flip-rate: %.2f%%, uncertain RMSE: %.4f, pos RMSE: %.4f)", flip_rate * 100, uncertain_rmse, pos_rmse)
                     break
             prev_positives = positives.copy()
             prev_predictions = predictions.copy()
 
             # Select next candidates
             if iteration < self.max_iterations:
-                print(f"Iteration {iteration}: Selecting candidates for next iteration...")
+                logger.info("Iteration %s: Selecting candidates for next iteration...", iteration)
                 unlabeled = df[not_is_synthetic & df["gt"].isna()]
                 if len(unlabeled) == 0:
-                    print("All documents labeled, stopping.")
+                    logger.info("All documents labeled, stopping.")
                     break
 
                 candidates = select_stratified_diverse(unlabeled, self.n_eval_per_iteration)
                 if len(candidates) == 0:
-                    print("No candidates found, stopping.")
+                    logger.info("No candidates found, stopping.")
                     break
-                print(f"Iteration {iteration}: Selected {len(candidates)} candidates to evaluate...")
+                logger.info("Iteration %s: Selected %s candidates to evaluate...", iteration, len(candidates))
 
         # Keep only real documents with a positive prediction
         positives = df.loc[not_is_synthetic & df['prediction_binary']]
@@ -335,7 +339,7 @@ class ActiveLearner:
         # Sort by score
         results_df = results_df.sort_values("score", ascending=False)
 
-        print(f"\n{results_df.to_string()}")
+        logger.info("\n%s", results_df.to_string())
 
         # Save parameters
         elapsed = time.time() - start_time
@@ -361,6 +365,6 @@ class ActiveLearner:
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
         }
 
-        print(f"Done! Time: {elapsed:.2f}s")
+        logger.info("Done! Time: %.2fs", elapsed)
 
         return results_df, params
