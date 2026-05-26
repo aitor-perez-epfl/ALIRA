@@ -1,6 +1,4 @@
-from typing import Annotated, List
-
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field
 
 from openai import OpenAI
 
@@ -9,8 +7,15 @@ from alira.config import CONFIG
 
 def send_embedding_request(texts: list[str]) -> list[list[float]]:
     client = OpenAI(base_url=CONFIG['ALIRA_LLM_BASE_URL'], api_key=CONFIG['ALIRA_LLM_API_KEY'])
-    response = client.embeddings.create(model=CONFIG['ALIRA_LLM_EMBEDDING_MODEL'], input=texts)
-    return [item.embedding for item in response.data]
+    embeddings = []
+    batch_size = 500
+
+    batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
+    for batch in batches:
+        r = client.embeddings.create(model=CONFIG['ALIRA_LLM_EMBEDDING_MODEL'], input=batch)
+        embeddings += [item.embedding for item in r.data]
+
+    return embeddings
 
 
 def send_llm_request(messages, response_format=None):
@@ -69,14 +74,17 @@ Here are the examples:
 ---
 """
 
-    class Text(BaseModel):
+    messages = [{'role': 'user', 'content': prompt}]
+
+    class TextItem(BaseModel):
         text: str
 
-    messages = [{'role': 'user', 'content': prompt}]
-    list_model = RootModel[Annotated[List[Text], Field(min_length=n, max_length=n)]]
-    texts = send_llm_request(messages, response_format=list_model)
+    class TextList(BaseModel):
+        texts: list[TextItem] = Field(min_length=n, max_length=n)
 
-    return [text.text for text in texts.root]
+    text_list = send_llm_request(messages, response_format=TextList)
+
+    return [text_item.text for text_item in text_list.texts]
 
 
 def evaluate_documents(
@@ -102,7 +110,10 @@ Produce a list of exactly {n} bools, one for each document, in the same order as
 """
 
     messages = [{'role': 'user', 'content': prompt}]
-    list_model = RootModel[Annotated[List[bool], Field(min_length=n, max_length=n)]]
-    evaluations = send_llm_request(messages, response_format=list_model)
 
-    return evaluations.root
+    class EvaluationList(BaseModel):
+        evaluations: list[bool] = Field(min_length=n, max_length=n)
+
+    evaluation_list = send_llm_request(messages, response_format=EvaluationList)
+
+    return evaluation_list.evaluations
