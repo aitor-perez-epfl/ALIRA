@@ -1,10 +1,10 @@
-import logging
-from datetime import datetime
-from pathlib import Path
-
 from dotenv import load_dotenv
 
 load_dotenv()
+
+import logging
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -12,8 +12,8 @@ from alira import ActiveLearner
 
 # Setup logging to file and console
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = Path(f"results/{timestamp}")
-output_dir.mkdir(exist_ok=True)
+output_dir = Path(f"results/demo-{timestamp}")
+output_dir.mkdir(exist_ok=True, parents=True)
 log_path = output_dir / "run.log"
 
 logging.basicConfig(
@@ -45,5 +45,4 @@ results_path = output_dir / "results.csv"
 children_movies.to_csv(results_path, index=False)
 logger.info("Saved results to %s", results_path)
 
-logger.info("\nParameters: %s", params)
 logger.info("Done!")

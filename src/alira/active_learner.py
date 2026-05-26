@@ -77,7 +77,7 @@ def select_candidates_to_evaluate(
         n_samples (int): Total number of samples to select.
         cluster (bool): When False, samples randomly within each stratum. When True,
             uses MiniBatchKMeans clustering on the 'embedding' column to pick one
-            item per cluster for diversity, similar to `select_stratified_diverse`.
+            item per cluster for diversity.
             Default is False.
 
     Returns:
@@ -230,7 +230,7 @@ class ActiveLearner:
 
         # print(f"Selecting the closest {self.n_nearest_start} documents to the synthetic centroid as candidates to evaluate...")
         # candidates = df.loc[not_is_synthetic].nsmallest(self.n_nearest_start, "distance_to_centroid")
-        candidates = select_stratified_diverse(df.loc[not_is_synthetic], self.n_eval_per_iteration)
+        candidates = select_candidates_to_evaluate(df.loc[not_is_synthetic], self.n_eval_per_iteration)
 
         # Active Learning loop
         logger.info("Starting active learning loop...")
@@ -323,7 +323,7 @@ class ActiveLearner:
                     logger.info("All documents labeled, stopping.")
                     break
 
-                candidates = select_stratified_diverse(unlabeled, self.n_eval_per_iteration)
+                candidates = select_candidates_to_evaluate(unlabeled, self.n_eval_per_iteration)
                 if len(candidates) == 0:
                     logger.info("No candidates found, stopping.")
                     break
@@ -338,8 +338,6 @@ class ActiveLearner:
 
         # Sort by score
         results_df = results_df.sort_values("score", ascending=False)
-
-        logger.info("\n%s", results_df.to_string())
 
         # Save parameters
         elapsed = time.time() - start_time
