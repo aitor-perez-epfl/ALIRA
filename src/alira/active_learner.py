@@ -183,7 +183,7 @@ class ActiveLearner:
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
             print(f"Iteration {iteration}: Evaluating {len(candidates)} documents...")
-            evaluations = evaluate_documents(topic=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
+            evaluations = evaluate_documents(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
             df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
             yes_count = df.loc[candidates.index].query("gt == True").shape[0]
