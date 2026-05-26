@@ -8,8 +8,8 @@ from alira.config import CONFIG
 
 
 def send_embedding_request(texts: list[str]) -> list[list[float]]:
-    client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
-    response = client.embeddings.create(model=CONFIG['RCP_EMBEDDING_MODEL'], input=texts)
+    client = OpenAI(base_url=CONFIG['ALIRA_LLM_BASE_URL'], api_key=CONFIG['ALIRA_LLM_API_KEY'])
+    response = client.embeddings.create(model=CONFIG['ALIRA_LLM_EMBEDDING_MODEL'], input=texts)
     return [item.embedding for item in response.data]
 
 
@@ -26,9 +26,9 @@ def send_llm_request(messages, response_format=None):
     else:
         response_format_schema = None
 
-    client = OpenAI(base_url=CONFIG['RCP_BASE_URL'], api_key=CONFIG['RCP_API_KEY'])
+    client = OpenAI(base_url=CONFIG['ALIRA_LLM_BASE_URL'], api_key=CONFIG['ALIRA_LLM_API_KEY'])
     response = client.chat.completions.create(
-        model=CONFIG['RCP_BASE_MODEL'],
+        model=CONFIG['ALIRA_LLM_BASE_MODEL'],
         messages=messages,
         response_format=response_format_schema,
     )

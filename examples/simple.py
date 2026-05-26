@@ -8,10 +8,9 @@ from alira import ActiveLearner
 
 # Read dataset with movie texts
 # (built from https://www.kaggle.com/datasets/tmdb/tmdb-movie-metadata)
-movies = pd.read_csv('movies.csv')
+movies = pd.read_csv('data/movies.csv')
 
 learner = ActiveLearner()
+superhero_movies, _, _ = learner.fit(df=movies, query="superheroes")
 
-results_df, _, _ = learner.fit(df=movies, query="superheros")
-
-print(results_df)
+print(superhero_movies[['text', 'score']])
