@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ValidationError
 
-from openai import OpenAI
+from openai import OpenAI, APITimeoutError
 
 from alira.config import CONFIG
 
@@ -18,7 +18,7 @@ def send_embedding_request(texts: list[str]) -> list[list[float]]:
     return embeddings
 
 
-def send_llm_request(messages, response_format=None):
+def send_llm_request(messages, response_format=None, max_tokens=None, timeout=30):
     if response_format:
         response_format_schema = {
             "type": "json_schema",
@@ -31,11 +31,12 @@ def send_llm_request(messages, response_format=None):
     else:
         response_format_schema = None
 
-    client = OpenAI(base_url=CONFIG['ALIRA_LLM_BASE_URL'], api_key=CONFIG['ALIRA_LLM_API_KEY'])
+    client = OpenAI(base_url=CONFIG['ALIRA_LLM_BASE_URL'], api_key=CONFIG['ALIRA_LLM_API_KEY'], timeout=timeout)
     response = client.chat.completions.create(
         model=CONFIG['ALIRA_LLM_BASE_MODEL'],
         messages=messages,
         response_format=response_format_schema,
+        max_tokens=max_tokens,
     )
     content = response.choices[0].message.content.strip()
 
@@ -49,7 +50,8 @@ def generate_documents(
     query: str,
     n: int,
     examples: list[str],
-    prompt: str | None = None
+    prompt: str | None = None,
+    max_retries: int = 3,
 ) -> list[str]:
     """Generate n synthetic documents about query, using examples for format reference."""
 
@@ -76,21 +78,29 @@ Here are the examples:
 
     messages = [{'role': 'user', 'content': prompt}]
 
-    class TextItem(BaseModel):
-        text: str
-
     class TextList(BaseModel):
-        texts: list[TextItem] = Field(min_length=n, max_length=n)
+        texts: list[str]
 
-    text_list = send_llm_request(messages, response_format=TextList)
+    for attempt in range(max_retries):
+        try:
+            response = send_llm_request(messages, response_format=TextList)
+            if len(response.texts) == n:
+                return response.texts
+        except APITimeoutError as e:
+            print(f"Failed to generate texts before timeout. Error: {e}")
+            pass
+        except ValidationError as e:
+            print(f"Failed to generate exactly {n} texts. Error: {e}")
+            pass
 
-    return [text_item.text for text_item in text_list.texts]
+    raise ValueError(f"Failed to get exactly {n} texts after {max_retries} attempts")
 
 
 def evaluate_documents(
     query: str,
     texts: list[str],
-    prompt: str | None = None
+    prompt: str | None = None,
+    max_retries: int = 3,
 ) -> list[bool]:
     """Evaluate with an LLM whether each of the texts is related to query."""
 
@@ -110,10 +120,21 @@ Produce a list of exactly {n} bools, one for each document, in the same order as
 """
 
     messages = [{'role': 'user', 'content': prompt}]
+    max_tokens = n * 8 + 32
 
     class EvaluationList(BaseModel):
-        evaluations: list[bool] = Field(min_length=n, max_length=n)
+        evaluations: list[bool]
 
-    evaluation_list = send_llm_request(messages, response_format=EvaluationList)
+    for attempt in range(max_retries):
+        try:
+            response = send_llm_request(messages, response_format=EvaluationList, max_tokens=max_tokens)
+            if len(response.evaluations) == n:
+                return response.evaluations
+        except APITimeoutError as e:
+            print(f"Failed to generate evaluations before timeout. Error: {e}")
+            pass
+        except ValidationError as e:
+            print(f"Failed to generate exactly {n} evaluations. Error: {e}")
+            pass
 
-    return evaluation_list.evaluations
+    raise ValueError(f"Failed to get exactly {n} evaluations after {max_retries} attempts")
