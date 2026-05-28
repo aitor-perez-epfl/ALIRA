@@ -191,6 +191,7 @@ class ActiveLearner:
             query, self.n_synthetic_documents, format_examples, self.generation_prompt
         )
         logger.info("Generated %s synthetic documents", len(synthetic_documents))
+        logger.info(synthetic_documents)
 
         logger.info("Embedding synthetic documents...")
         synthetic_embeddings = send_embedding_request(synthetic_documents)
