@@ -5,11 +5,13 @@ import pandas as pd
 from pathlib import Path
 
 # Read both result CSVs
-result1 = pd.read_csv(Path(__file__).parent / "results" / "lab-explorer-20260528-152230-kmeans" / "results.csv")
-result2 = pd.read_csv(Path(__file__).parent / "results" / "lab-explorer-20260528-152741-no-kmeans" / "results.csv")
+name1 = "lab-explorer-20260528-152741-no-kmeans"
+name2 = "lab-explorer-20260528-163352-no-kmeans"
+result1 = pd.read_csv(Path(__file__).parent / "results" / name1 / "results.csv")
+result2 = pd.read_csv(Path(__file__).parent / "results" / name2 / "results.csv")
 
-print(f"Result 1 (kmeans): {len(result1)} rows")
-print(f"Result 2 (no-kmeans): {len(result2)} rows")
+print(f"Result 1 ({name1}): {len(result1)} rows")
+print(f"Result 2 ({name2}): {len(result2)} rows")
 
 # Compare common IDs
 ids1 = set(result1['id'])
@@ -20,17 +22,17 @@ only_in_1 = ids1 - ids2
 only_in_2 = ids2 - ids1
 
 print(f"\nCommon IDs: {len(common_ids)}")
-print(f"Only in kmeans: {len(only_in_1)}")
-print(f"Only in no-kmeans: {len(only_in_2)}")
+print(f"Only in {name1}: {len(only_in_1)}")
+print(f"Only in {name2}: {len(only_in_2)}")
 
 if only_in_1:
-    print("\nOnly in kmeans:")
+    print(f"\nOnly in {name1}:")
     for id_ in only_in_1:
         name = result1[result1['id'] == id_]['name'].iloc[0]
         print(f"  - {id_}: {name}")
 
 if only_in_2:
-    print("\nOnly in no-kmeans:")
+    print(f"\nOnly in {name2}:")
     for id_ in only_in_2:
         name = result2[result2['id'] == id_]['name'].iloc[0]
         print(f"  - {id_}: {name}")
@@ -73,10 +75,10 @@ if common_ids:
     print(f"  Prediction agreement: {prediction_matches}/{len(common_ids)} ({100*prediction_matches/len(common_ids):.1f}%)")
 
 # Show top 5 scores for each
-print("\n\nTop 5 scores (kmeans):")
+print(f"\n\nTop 5 scores ({name1}):")
 for _, row in result1.nlargest(5, 'score').iterrows():
     print(f"  {row['score']:.4f} - {row['name'][:60]}")
 
-print("\nTop 5 scores (no-kmeans):")
+print(f"\nTop 5 scores ({name2}):")
 for _, row in result2.nlargest(5, 'score').iterrows():
     print(f"  {row['score']:.4f} - {row['name'][:60]}")
