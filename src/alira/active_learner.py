@@ -7,7 +7,9 @@ import pandas as pd
 from sklearn.cluster import MiniBatchKMeans
 
 from alira.classifiers import LogisticRegressionClassifier
-from alira.llms import generate_documents, evaluate_documents, send_embedding_request
+from alira.synthetic import generate_documents
+from alira.evaluation import evaluate
+from alira.llms import send_embedding_request
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +244,7 @@ class ActiveLearner:
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
             logger.info("Iteration %s: Evaluating %s documents...", iteration, len(candidates))
-            evaluations = evaluate_documents(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
+            evaluations = evaluate(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
             df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
             yes_count = df.loc[candidates.index].query("gt == True").shape[0]
