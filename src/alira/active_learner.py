@@ -93,6 +93,7 @@ class ActiveLearner:
 
     def __init__(
         self,
+        df: pd.DataFrame,
         n_synthetic: int = 10,
         min_iterations: int = 3,
         max_iterations: int = 20,
@@ -104,6 +105,7 @@ class ActiveLearner:
     ):
         """
         Args:
+            df: Corpus with a required ``text`` column and optional ``embedding`` column
             n_synthetic: Number of synthetic texts to generate for bootstrapping
             min_iterations: Minimum iterations before early stopping is evaluated
             max_iterations: Maximum active learning iterations
@@ -113,6 +115,8 @@ class ActiveLearner:
             generation_prompt: Replaces the default synthetic text generation prompt
             evaluation_prompt: Replaces the default text evaluation prompt
         """
+        self.df_ = df.copy()
+        self.n_corpus_ = len(self.df_)
         self.n_synthetic = n_synthetic
         self.min_iterations = min_iterations
         self.max_iterations = max_iterations
@@ -125,32 +129,29 @@ class ActiveLearner:
         # Fit-time attributes (sklearn convention: trailing underscore)
         self.classifier_ = None
         self.query_ = None
-        self.n_corpus_ = None
         self.iterations_ = None
         self.execution_time_ = None
 
-    def fit(self, df: pd.DataFrame, query: str):
-        """Run active learning loop and train the classifier.
+    def fit(self, query: str):
+        """Run the active-learning loop and train the classifier.
 
         Args:
-            df: Corpus with a required `text` column and an optional `embedding` column.
-                If embeddings are absent they are generated at the start of fit.
             query: Search query/topic
 
         Returns:
             self
         """
-
         start_time = time.time()
         query = query.strip()[:15000]
 
         logger.info("Starting classification for query: %s", query)
 
-        df = df.copy()
-        if "embedding" not in df.columns:
-            logger.info("Generating embeddings for %s texts...", len(df))
-            df["embedding"] = send_embedding_request(df["text"].tolist())
+        if "embedding" not in self.df_.columns:
+            logger.info("Generating embeddings for %s texts...", self.n_corpus_)
+            self.df_["embedding"] = send_embedding_request(self.df_["text"].tolist())
             logger.info("Embeddings generated.")
+
+        df = self.df_.copy()
 
         non_empty = df[df["text"].str.strip() != ""]["text"]
         format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
@@ -167,7 +168,6 @@ class ActiveLearner:
         synthetic_embeddings = np.array(synthetic_embeddings)
         logger.info("Embedded %s synthetic texts", len(synthetic_embeddings))
 
-        n_corpus = len(df)
         df["gt"] = pd.NA
         df["is_synthetic"] = False
 
@@ -283,18 +283,18 @@ class ActiveLearner:
 
         self.classifier_ = classifier
         self.query_ = query
-        self.n_corpus_ = n_corpus
         self.iterations_ = iteration
         self.execution_time_ = time.time() - start_time
         logger.info("Done! Time: %.2fs", self.execution_time_)
         return self
 
-    def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
+    def predict_proba(self, df: pd.DataFrame | None = None) -> np.ndarray:
         """Return the probability that each text matches the query.
 
         Args:
-            df: DataFrame with a `text` column. Embeddings are generated
-                automatically if not present.
+            df: DataFrame with a ``text`` column. If *None*, uses the corpus
+                supplied at initialisation. Embeddings are generated
+                automatically if absent.
 
         Returns:
             1-D array of shape (n_samples,) with P(positive) for each text.
@@ -302,18 +302,23 @@ class ActiveLearner:
         if self.classifier_ is None:
             raise ValueError("This ActiveLearner instance is not fitted yet. Call 'fit' before predicting.")
 
-        df = df.copy()
-        if "embedding" not in df.columns:
-            df["embedding"] = send_embedding_request(df["text"].tolist())
+        if df is None:
+            df = self.df_.copy()
+        else:
+            df = df.copy()
+            if "embedding" not in df.columns:
+                df["embedding"] = send_embedding_request(df["text"].tolist())
+
         embeddings = np.vstack(df["embedding"].values)
         return self.classifier_.predict_proba(embeddings)[:, 1]
 
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
+    def predict(self, df: pd.DataFrame | None = None) -> np.ndarray:
         """Return binary predictions for each text.
 
         Args:
-            df: DataFrame with a `text` column. Embeddings are generated
-                automatically if not present.
+            df: DataFrame with a ``text`` column. If *None*, uses the corpus
+                supplied at initialisation. Embeddings are generated
+                automatically if absent.
 
         Returns:
             Boolean array of shape (n_samples,) with True for predicted positives.

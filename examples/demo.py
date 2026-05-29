@@ -36,12 +36,12 @@ logger.info("Loading dataset...")
 movies = pd.read_csv("data/movies.csv")[:100]
 logger.info("Loaded %s movies", len(movies))
 
-learner = ActiveLearner()
+learner = ActiveLearner(df=movies)
 logger.info("Starting classification for query: 'movies for children'")
-learner.fit(df=movies, query="movies for children")
+learner.fit(query="movies for children")
 
 # Get predictions
-scores = learner.predict_proba(movies)
+scores = learner.predict_proba()
 children_movies = movies.copy()
 children_movies["score"] = scores
 children_movies = children_movies[children_movies["score"] >= 0.5].sort_values("score", ascending=False)
