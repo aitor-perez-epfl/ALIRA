@@ -20,45 +20,6 @@ pd.set_option('display.width', 1000)
 _N_FORMAT_EXAMPLES = 5
 
 
-def select_stratified_diverse(df: pd.DataFrame, n_samples: int) -> pd.DataFrame:
-    """Stratified by confidence + diverse within each stratum."""
-    if len(df) == 0 or n_samples <= 0:
-        return df.head(0)
-
-    df = df.copy()
-
-    zones = [
-        (df[df["prediction"] > 0.7], 0.4),  # 40% high confidence positive
-        (df[df["prediction"].between(0.3, 0.7)], 0.4),  # 40% uncertain
-        (df[df["prediction"] < 0.3], 0.2),  # 20% likely negative
-    ]
-
-    selected = []
-    for zone_df, fraction in zones:
-        if len(zone_df) == 0:
-            continue
-
-        n_zone = max(1, int(n_samples * fraction))
-
-        # Use clustering for diversity within zone
-        n_clusters = min(n_zone, len(zone_df))
-        if n_clusters > 1:
-            embeddings = np.vstack(zone_df["embedding"].values)
-            kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=42, n_init=3)
-            zone_df = zone_df.copy()
-            zone_df["cluster"] = kmeans.fit_predict(embeddings)
-
-            # Random sample from each cluster
-            for c in range(n_clusters):
-                cluster = zone_df[zone_df["cluster"] == c]
-                if len(cluster) > 0:
-                    selected.append(cluster.sample(1).index[0])
-        else:
-            selected.extend(zone_df.sample(min(n_zone, len(zone_df))).index)
-
-    return df.loc[selected[:n_samples]]  # Trim to exact budget
-
-
 def select_candidates_to_evaluate(
     df: pd.DataFrame, n_samples: int, cluster: bool = False
 ) -> pd.DataFrame:
@@ -132,8 +93,6 @@ class ActiveLearner:
         max_iterations: int = 20,
         n_eval_per_iteration: int = 30,
         c_value: float = 1.0,
-        early_stop_threshold: float = 0.02,
-        uncertain_rmse_early_stop_threshold: float = 0.01,
         pos_rmse_early_stop_threshold: float = 0.01,
         generation_prompt: str | None = None,
         evaluation_prompt: str | None = None,
@@ -145,8 +104,6 @@ class ActiveLearner:
             max_iterations: Maximum active learning iterations
             n_eval_per_iteration: Documents evaluated per iteration
             c_value: C parameter for LogisticRegression
-            early_stop_threshold: Max flip rate to consider predictions stable
-            uncertain_rmse_early_stop_threshold: Max RMSE in the uncertain zone (0.3–0.7) to consider stable
             pos_rmse_early_stop_threshold: Max RMSE in the positive zone (>=0.5) to consider stable
             generation_prompt: Replaces the default synthetic document generation prompt
             evaluation_prompt: Replaces the default document evaluation prompt
@@ -156,8 +113,6 @@ class ActiveLearner:
         self.max_iterations = max_iterations
         self.n_eval_per_iteration = n_eval_per_iteration
         self.c_value = c_value
-        self.early_stop_threshold = early_stop_threshold
-        self.uncertain_rmse_early_stop_threshold = uncertain_rmse_early_stop_threshold
         self.pos_rmse_early_stop_threshold = pos_rmse_early_stop_threshold
         self.generation_prompt = generation_prompt
         self.evaluation_prompt = evaluation_prompt
@@ -231,15 +186,12 @@ class ActiveLearner:
 
         not_is_synthetic = ~df["is_synthetic"]
 
-        # print(f"Selecting the closest {self.n_nearest_start} documents to the synthetic centroid as candidates to evaluate...")
-        # candidates = df.loc[not_is_synthetic].nsmallest(self.n_nearest_start, "distance_to_centroid")
+        logger.info(f"Selecting {self.n_eval_per_iteration} candidates for initial evaluation...")
         candidates = select_candidates_to_evaluate(df.loc[not_is_synthetic], self.n_eval_per_iteration)
 
         # Active Learning loop
         logger.info("Starting active learning loop...")
-        classifier = None
-        prev_positives = None
-        prev_predictions = None
+        prev_predictions = df.loc[not_is_synthetic, 'prediction'].values
         iteration = 0
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
@@ -291,32 +243,19 @@ class ActiveLearner:
             pred_dict = df.loc[not_is_synthetic, "prediction_binary"].value_counts().to_dict()
             logger.info("Iteration %s: Predicted all documents: %s", iteration, pred_dict)
 
-            # Early stopping
-            positives = set(df.index[not_is_synthetic & df["prediction_binary"]])
+            # Positive RMSE
             predictions = df.loc[not_is_synthetic, 'prediction'].values
-            if prev_positives is not None and iteration > self.min_iterations:
-                flipped = len(positives ^ prev_positives)
-                total = len(positives | prev_positives)
-                flip_rate = flipped / total if total > 0 else 0
-                logger.info("Flip rate: %.2f%%", flip_rate * 100)
-
-                uncertain = (
-                    ((predictions >= 0.3) & (predictions <= 0.7)) |
-                    ((prev_predictions >= 0.3) & (prev_predictions <= 0.7))
-                )
-                pos = (
-                    (predictions >= 0.5) | (prev_predictions >= 0.5)
-                )
-                uncertain_rmse = np.sqrt(np.mean((predictions[uncertain] - prev_predictions[uncertain]) ** 2)) if uncertain.sum() > 0 else 0.0
-                pos_rmse = np.sqrt(np.mean((predictions[pos] - prev_predictions[pos]) ** 2)) if pos.sum() > 0 else 0.0
-                logger.info("Uncertain zone RMSE: %.4f", uncertain_rmse)
-                logger.info("Positive zone RMSE: %.4f", pos_rmse)
-
-                if flip_rate < self.early_stop_threshold or uncertain_rmse < self.uncertain_rmse_early_stop_threshold or pos_rmse < self.pos_rmse_early_stop_threshold:
-                    logger.info("Early stop (flip-rate: %.2f%%, uncertain RMSE: %.4f, pos RMSE: %.4f)", flip_rate * 100, uncertain_rmse, pos_rmse)
-                    break
-            prev_positives = positives.copy()
+            positive_zone = (
+                (prev_predictions >= 0.5) | (predictions >= 0.5)
+            )
+            positive_zone_rmse = np.sqrt(np.mean((predictions[positive_zone] - prev_predictions[positive_zone]) ** 2)) if positive_zone.sum() > 0 else 0.0
             prev_predictions = predictions.copy()
+            logger.info("Positive zone RMSE: %.4f", positive_zone_rmse)
+
+            # Early stopping
+            if iteration > self.min_iterations and positive_zone_rmse < self.pos_rmse_early_stop_threshold:
+                logger.info("Early stop: Positive zone RMSE (%.4f) below threshold (%.4f)", positive_zone_rmse, self.pos_rmse_early_stop_threshold)
+                break
 
             # Select next candidates
             if iteration < self.max_iterations:
