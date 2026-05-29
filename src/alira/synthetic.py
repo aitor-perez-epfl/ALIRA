@@ -6,14 +6,14 @@ from openai import APITimeoutError
 from alira.llms import send_llm_request
 
 
-def generate_documents(
+def generate_synthetic_texts(
     query: str,
     n: int,
     examples: list[str],
     prompt: str | None = None,
     max_retries: int = 3,
 ) -> list[str]:
-    """Generate n synthetic documents about query, using examples for format reference."""
+    """Generate n synthetic texts about query, using examples for format reference."""
 
     if prompt is None:
         examples_block = "\n\n---\n\n".join(
@@ -23,7 +23,7 @@ def generate_documents(
         prompt = f"""
 You are an expert generating texts related to a given topic. 
 Below are some randomly chosen example texts from a dataset.
-Your task is to produce a list of exactly {n} documents with the same format as the example texts, but so that all the texts you produce are related to the topic "{query}".
+Your task is to produce a list of exactly {n} texts with the same format as the example texts, but so that all the texts you produce are related to the topic "{query}".
 Produce texts that could be extracted from the same dataset as the examples but somehow having filtered semantically by the given topic.
 Do not include the delimiters in your generated texts.
 
