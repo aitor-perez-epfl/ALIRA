@@ -38,7 +38,13 @@ logger.info("Loaded %s movies", len(movies))
 
 learner = ActiveLearner()
 logger.info("Starting classification for query: 'movies for children'")
-children_movies, params = learner.fit(df=movies, query="movies for children")
+learner.fit(df=movies, query="movies for children")
+
+# Get predictions
+scores = learner.predict_proba(movies)
+children_movies = movies.copy()
+children_movies["score"] = scores
+children_movies = children_movies[children_movies["score"] >= 0.5].sort_values("score", ascending=False)
 
 # Save results to CSV
 results_path = output_dir / "results.csv"

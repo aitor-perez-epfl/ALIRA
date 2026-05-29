@@ -47,8 +47,14 @@ logger.info("Fetched %s documents with type %s", len(df), doc_type)
 logger.info("Preparing Active Learner for documents with type `%s`...", doc_type)
 learner = ActiveLearner()
 logger.info("Fitting learner for query=`%s`...", query)
-results_df, params = learner.fit(df=df, query=query)
+learner.fit(df=df, query=query)
 logger.info("Learner fit")
+
+# Get predictions
+scores = learner.predict_proba(df)
+results_df = df.copy()
+results_df["score"] = scores
+results_df = results_df[results_df["score"] >= 0.5].sort_values("score", ascending=False)
 
 # Save results to CSV
 results_path = output_dir / "results.csv"

@@ -122,9 +122,15 @@ class ActiveLearner:
         self.generation_prompt = generation_prompt
         self.evaluation_prompt = evaluation_prompt
 
+        # Fit-time attributes (sklearn convention: trailing underscore)
+        self.classifier_ = None
+        self.query_ = None
+        self.n_corpus_ = None
+        self.iterations_ = None
+        self.execution_time_ = None
+
     def fit(self, df: pd.DataFrame, query: str):
-        """
-        Run active learning classification.
+        """Run active learning loop and train the classifier.
 
         Args:
             df: Corpus with a required `text` column and an optional `embedding` column.
@@ -132,7 +138,7 @@ class ActiveLearner:
             query: Search query/topic
 
         Returns:
-            results_df (positive items with scores), params_dict
+            self
         """
 
         start_time = time.time()
@@ -161,8 +167,7 @@ class ActiveLearner:
         synthetic_embeddings = np.array(synthetic_embeddings)
         logger.info("Embedded %s synthetic texts", len(synthetic_embeddings))
 
-        original_columns = list(df.columns)
-
+        n_corpus = len(df)
         df["gt"] = pd.NA
         df["is_synthetic"] = False
 
@@ -195,6 +200,7 @@ class ActiveLearner:
 
         # Active Learning loop
         logger.info("Starting active learning loop...")
+        classifier = None
         prev_predictions = df.loc[not_is_synthetic, 'prediction'].values
         iteration = 0
         for iteration in range(1, self.max_iterations + 1):
@@ -275,40 +281,41 @@ class ActiveLearner:
                     break
                 logger.info("Iteration %s: Selected %s candidates to evaluate...", iteration, len(candidates))
 
-        # Keep only real texts with a positive prediction
-        positives = df.loc[not_is_synthetic & df['prediction_binary']]
+        self.classifier_ = classifier
+        self.query_ = query
+        self.n_corpus_ = n_corpus
+        self.iterations_ = iteration
+        self.execution_time_ = time.time() - start_time
+        logger.info("Done! Time: %.2fs", self.execution_time_)
+        return self
 
-        # Add score, prediction_binary and confidence columns from the classifier
-        results_df = positives[original_columns + ["prediction", "prediction_binary", "confidence"]].copy()
-        results_df = results_df.rename(columns={"prediction": "score"})
+    def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
+        """Return the probability that each text matches the query.
 
-        # Sort by score
-        results_df = results_df.sort_values("score", ascending=False)
+        Args:
+            df: DataFrame with a `text` column. Embeddings are generated
+                automatically if not present.
 
-        # Save parameters
-        elapsed = time.time() - start_time
-        params = {
-            "query": query,
-            "n_synthetic": self.n_synthetic,
-            "min_iterations": self.min_iterations,
-            "max_iterations": self.max_iterations,
-            "n_eval_per_iteration": self.n_eval_per_iteration,
-            "execution_times": {
-                "total_seconds": elapsed
-            },
-            "statistics": {
-                "total_items": len(df),
-                "positive_items": len(results_df),
-                "negative_items": len(df) - len(results_df),
-                "iterations_completed": iteration
-            },
-            "model_info": {
-                "type": "LogisticRegression",
-                "c_value": self.c_value
-            },
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
-        }
+        Returns:
+            1-D array of shape (n_samples,) with P(positive) for each text.
+        """
+        if self.classifier_ is None:
+            raise ValueError("This ActiveLearner instance is not fitted yet. Call 'fit' before predicting.")
 
-        logger.info("Done! Time: %.2fs", elapsed)
+        df = df.copy()
+        if "embedding" not in df.columns:
+            df["embedding"] = send_embedding_request(df["text"].tolist())
+        embeddings = np.vstack(df["embedding"].values)
+        return self.classifier_.predict_proba(embeddings)[:, 1]
 
-        return results_df, params
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        """Return binary predictions for each text.
+
+        Args:
+            df: DataFrame with a `text` column. Embeddings are generated
+                automatically if not present.
+
+        Returns:
+            Boolean array of shape (n_samples,) with True for predicted positives.
+        """
+        return self.predict_proba(df) >= 0.5
