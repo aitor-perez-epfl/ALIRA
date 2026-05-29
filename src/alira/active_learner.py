@@ -20,69 +20,6 @@ pd.set_option('display.width', 1000)
 _N_FORMAT_EXAMPLES = 5
 
 
-def select_candidates_to_evaluate(
-    df: pd.DataFrame, n_samples: int, cluster: bool = False
-) -> pd.DataFrame:
-    """Select candidates for evaluation using a confidence-based stratified sampling strategy.
-
-    This function divides the input data into three confidence zones based on the
-    'prediction' column and samples within each zone to ensure a balanced representation
-    of high-confidence positives, uncertain items, and likely negatives.
-
-    The sampling budget is allocated as follows:
-        - High confidence positive (prediction > 0.7): 30%
-        - Uncertain (prediction between 0.3 and 0.7): 40%
-        - Likely negative (prediction < 0.3): 30%
-
-    Args:
-        df (pd.DataFrame): DataFrame containing at least a 'prediction' column.
-            The index values are used to select the returned rows.
-        n_samples (int): Total number of samples to select.
-        cluster (bool): When False, samples randomly within each stratum. When True,
-            uses MiniBatchKMeans clustering on the 'embedding' column to pick one
-            item per cluster for diversity.
-            Default is False.
-
-    Returns:
-        pd.DataFrame: A DataFrame containing the selected candidate rows. If the
-            input is empty or n_samples is <= 0, returns an empty DataFrame.
-    """
-    if len(df) == 0 or n_samples <= 0:
-        return df.head(0)
-
-    zones = [
-        (df[df["prediction"] > 0.7], 0.3),       # 30% high confidence positive
-        (df[df["prediction"].between(0.3, 0.7)], 0.4),  # 40% uncertain
-        (df[df["prediction"] < 0.3], 0.3),       # 30% likely negative
-    ]
-
-    selected = []
-    for zone_df, fraction in zones:
-        if len(zone_df) == 0:
-            continue
-
-        n_zone = max(1, int(n_samples * fraction))
-
-        if cluster:
-            n_clusters = min(n_zone, len(zone_df))
-            if n_clusters > 1:
-                embeddings = np.vstack(zone_df["embedding"].values)
-                kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=42, n_init=3)
-                zone_df = zone_df.copy()
-                zone_df["cluster"] = kmeans.fit_predict(embeddings)
-
-                for c in range(n_clusters):
-                    cluster_items = zone_df[zone_df["cluster"] == c]
-                    if len(cluster_items) > 0:
-                        selected.append(cluster_items.sample(1).index[0])
-            else:
-                selected.extend(zone_df.sample(min(n_zone, len(zone_df))).index)
-        else:
-            selected.extend(zone_df.sample(min(n_zone, len(zone_df))).index)
-
-    return df.loc[selected[:n_samples]]  # Trim to exact budget
-
-
 class ActiveLearner:
     """Active-learning binary classifier that bootstraps with LLM-generated synthetic texts.
 
@@ -100,6 +37,7 @@ class ActiveLearner:
         n_eval_per_iteration: int = 30,
         c_value: float = 1.0,
         positive_zone_rmse_threshold: float = 0.01,
+        cluster_candidates: bool = False,
         generation_prompt: str | None = None,
         evaluation_prompt: str | None = None,
     ):
@@ -112,17 +50,22 @@ class ActiveLearner:
             n_eval_per_iteration: Number of texts evaluated per iteration
             c_value: C parameter for LogisticRegression
             positive_zone_rmse_threshold: Max RMSE in the positive zone (>=0.5) to consider stable
+            cluster_candidates: If True, cluster candidates within each stratum for diversity
             generation_prompt: Replaces the default synthetic text generation prompt
             evaluation_prompt: Replaces the default text evaluation prompt
         """
-        self.df_ = df.copy()
-        self.n_corpus_ = len(self.df_)
+        df = df.copy()
+        # Extract embeddings if present so user df stays clean; store as numpy array
+        self.embeddings_ = np.vstack(df.pop("embedding").values) if "embedding" in df.columns else None
+        self.corpus_ = df
+        self.n_corpus_ = len(self.corpus_)
         self.n_synthetic = n_synthetic
         self.min_iterations = min_iterations
         self.max_iterations = max_iterations
         self.n_eval_per_iteration = n_eval_per_iteration
         self.c_value = c_value
         self.positive_zone_rmse_threshold = positive_zone_rmse_threshold
+        self.cluster_candidates = cluster_candidates
         self.generation_prompt = generation_prompt
         self.evaluation_prompt = evaluation_prompt
 
@@ -131,6 +74,57 @@ class ActiveLearner:
         self.query_ = None
         self.iterations_ = None
         self.execution_time_ = None
+
+    @property
+    def embeddings(self) -> np.ndarray:
+        """Return cached embeddings or compute and cache them."""
+        if self.embeddings_ is None:
+            logger.info("Generating embeddings for %s texts...", self.n_corpus_)
+            self.embeddings_ = np.array(send_embedding_request(self.corpus_["text"].tolist()))
+            logger.info("Embeddings generated.")
+        return self.embeddings_
+
+    def _select_candidates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Select candidates from a real (non-synthetic) subset using stratified sampling."""
+        n_samples = self.n_eval_per_iteration
+
+        if len(df) == 0 or n_samples <= 0:
+            return df.head(0)
+
+        zones = [
+            (df[df["prediction"] > 0.7], 0.30),
+            (df[df["prediction"].between(0.3, 0.7)], 0.40),
+            (df[df["prediction"] < 0.3], 0.30),
+        ]
+
+        selected = []
+        for zone_df, fraction in zones:
+            if len(zone_df) == 0:
+                continue
+
+            n_zone = max(1, int(n_samples * fraction))
+
+            if self.cluster_candidates:
+                n_clusters = min(n_zone, len(zone_df))
+                if n_clusters > 1:
+                    zone_indices = zone_df.index.to_numpy()
+                    # Map index → position in self.corpus_ for embeddings lookup
+                    # corpus_ indices are 0..n_corpus_-1; zone_df indices are aligned
+                    zone_embeddings = self.embeddings[zone_indices]
+                    kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=42, n_init=3)
+                    zone_df = zone_df.copy()
+                    zone_df["cluster"] = kmeans.fit_predict(zone_embeddings)
+
+                    for c in range(n_clusters):
+                        cluster_items = zone_df[zone_df["cluster"] == c]
+                        if len(cluster_items) > 0:
+                            selected.append(cluster_items.sample(1).index[0])
+                else:
+                    selected.extend(zone_df.sample(min(n_zone, len(zone_df))).index)
+            else:
+                selected.extend(zone_df.sample(min(n_zone, len(zone_df))).index)
+
+        return df.loc[selected[:n_samples]]
 
     def fit(self, query: str):
         """Run the active-learning loop and train the classifier.
@@ -146,12 +140,8 @@ class ActiveLearner:
 
         logger.info("Starting classification for query: %s", query)
 
-        if "embedding" not in self.df_.columns:
-            logger.info("Generating embeddings for %s texts...", self.n_corpus_)
-            self.df_["embedding"] = send_embedding_request(self.df_["text"].tolist())
-            logger.info("Embeddings generated.")
-
-        df = self.df_.copy()
+        df = self.corpus_.copy()
+        corpus_embeddings = self.embeddings  # triggers computation if needed
 
         non_empty = df[df["text"].str.strip() != ""]["text"]
         format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
@@ -173,7 +163,6 @@ class ActiveLearner:
 
         synthetic_df = pd.DataFrame({
             "text": synthetic_texts,
-            "embedding": [synthetic_embeddings[i] for i in range(len(synthetic_texts))],
             "is_synthetic": True,
             "gt": True
         })
@@ -183,7 +172,7 @@ class ActiveLearner:
         df = pd.concat([synthetic_df, df])
 
         # Compute distance to synthetic centroid
-        all_embeddings = np.vstack(df["embedding"].values)
+        all_embeddings = np.vstack([synthetic_embeddings, corpus_embeddings])
         synthetic_centroid = np.mean(synthetic_embeddings, axis=0).reshape(1, -1)
         synthetic_centroid = synthetic_centroid / np.linalg.norm(synthetic_centroid)
         df["cosine_similarity"] = all_embeddings @ synthetic_centroid.T
@@ -195,8 +184,8 @@ class ActiveLearner:
 
         not_is_synthetic = ~df["is_synthetic"]
 
-        logger.info(f"Selecting {self.n_eval_per_iteration} candidates for initial evaluation...")
-        candidates = select_candidates_to_evaluate(df.loc[not_is_synthetic], self.n_eval_per_iteration)
+        logger.info("Selecting %s candidates for initial evaluation...", self.n_eval_per_iteration)
+        candidates = self._select_candidates(df.loc[not_is_synthetic])
 
         # Active Learning loop
         logger.info("Starting active learning loop...")
@@ -214,11 +203,9 @@ class ActiveLearner:
             logger.info("Iteration %s: Evaluated %s texts. Yes: %s, No: %s", iteration, len(candidates), yes_count, no_count)
 
             # Train on labeled data
-            training_df = df.dropna(subset=["gt"]).copy()
-            training_df["gt"] = training_df["gt"].astype(bool)
-
-            X_train = np.vstack(training_df["embedding"].values)
-            y_train = training_df["gt"].values
+            labeled_mask = df["gt"].notna()
+            X_train = all_embeddings[labeled_mask]
+            y_train = df.loc[labeled_mask, "gt"].astype(bool).values
 
             # Check we have both classes
             if len(np.unique(y_train)) < 2:
@@ -228,10 +215,9 @@ class ActiveLearner:
                     n_add = max(1, int(y_train.sum()))
                     farthest = unlabeled.nsmallest(n_add, "cosine_similarity")
                     df.loc[farthest.index, "gt"] = False
-                    training_df = df.dropna(subset=["gt"]).copy()
-                    training_df["gt"] = training_df["gt"].astype(bool)
-                    X_train = np.vstack(training_df["embedding"].values)
-                    y_train = training_df["gt"].values
+                    labeled_mask = df["gt"].notna()
+                    X_train = all_embeddings[labeled_mask]
+                    y_train = df.loc[labeled_mask, "gt"].astype(bool).values
                     logger.info("Added %s distant texts as negatives", len(farthest))
 
             if len(np.unique(y_train)) < 2:
@@ -239,7 +225,7 @@ class ActiveLearner:
                 continue
 
             # Train classifier
-            dist_dict = training_df["gt"].value_counts().to_dict()
+            dist_dict = df.loc[labeled_mask, "gt"].value_counts().to_dict()
             logger.info("Iteration %s: Training classifier on %s texts (%s)...", iteration, len(y_train), dist_dict)
             classifier = LogisticRegressionClassifier(c=self.c_value)
             classifier.fit(X_train, y_train)
@@ -270,12 +256,7 @@ class ActiveLearner:
             # Select next candidates
             if iteration < self.max_iterations:
                 logger.info("Iteration %s: Selecting candidates for next iteration...", iteration)
-                unlabeled = df[not_is_synthetic & df["gt"].isna()]
-                if len(unlabeled) == 0:
-                    logger.info("All texts labeled, stopping.")
-                    break
-
-                candidates = select_candidates_to_evaluate(unlabeled, self.n_eval_per_iteration)
+                candidates = self._select_candidates(df.loc[not_is_synthetic & df["gt"].isna()])
                 if len(candidates) == 0:
                     logger.info("No candidates found, stopping.")
                     break
@@ -303,13 +284,9 @@ class ActiveLearner:
             raise ValueError("This ActiveLearner instance is not fitted yet. Call 'fit' before predicting.")
 
         if df is None:
-            df = self.df_.copy()
-        else:
-            df = df.copy()
-            if "embedding" not in df.columns:
-                df["embedding"] = send_embedding_request(df["text"].tolist())
+            return self.classifier_.predict_proba(self.embeddings)[:, 1]
 
-        embeddings = np.vstack(df["embedding"].values)
+        embeddings = np.array(send_embedding_request(df["text"].tolist()))
         return self.classifier_.predict_proba(embeddings)[:, 1]
 
     def predict(self, df: pd.DataFrame | None = None) -> np.ndarray:
