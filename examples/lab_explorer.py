@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 import epfl_data_index as edi
 
-from alira.active_learner import ActiveLearner
+from alira import ActiveLearner
 
 # Setup logging to file and console
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

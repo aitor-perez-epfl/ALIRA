@@ -183,15 +183,15 @@ class ActiveLearner:
         items["prediction_binary"] = items["prediction"] > 0.5
         items["confidence"] = (items["prediction"] - 0.5).abs()
 
-        not_is_synthetic = ~items["is_synthetic"]
+        corpus_mask = ~items["is_synthetic"]
 
         logger.info("Selecting %s candidates for initial evaluation...", self.n_eval_per_iteration)
-        candidates = self._select_candidates(items.loc[not_is_synthetic])
+        candidates = self._select_candidates(items.loc[corpus_mask])
 
         # Active Learning loop
         logger.info("Starting active learning loop...")
         classifier = None
-        prev_predictions = items.loc[not_is_synthetic, 'prediction'].values
+        prev_predictions = items.loc[corpus_mask, 'prediction'].values
         iteration = 0
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
@@ -199,8 +199,8 @@ class ActiveLearner:
             evaluations = evaluate(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
             items.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
-            yes_count = items.loc[candidates.index].query("gt == True").shape[0]
-            no_count = items.loc[candidates.index].query("gt == False").shape[0]
+            yes_count = sum(evaluations)
+            no_count = len(evaluations) - yes_count
             logger.info("Iteration %s: Evaluated %s texts. Yes: %s, No: %s", iteration, len(candidates), yes_count, no_count)
 
             # Train on labeled data
@@ -211,7 +211,7 @@ class ActiveLearner:
             # Check we have both classes
             if len(np.unique(y_train)) < 2:
                 # Add farthest unlabeled as negatives
-                unlabeled = items[not_is_synthetic & items["gt"].isna()]
+                unlabeled = items[corpus_mask & items["gt"].isna()]
                 if len(unlabeled) > 0:
                     n_add = max(1, int(y_train.sum()))
                     farthest = unlabeled.nsmallest(n_add, "cosine_similarity")
@@ -237,15 +237,19 @@ class ActiveLearner:
             items["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
             items["prediction_binary"] = items["prediction"] > 0.5
             items["confidence"] = (items["prediction"] - 0.5).abs()
-            pred_dict = items.loc[not_is_synthetic, "prediction_binary"].value_counts().to_dict()
+            pred_dict = items.loc[corpus_mask, "prediction_binary"].value_counts().to_dict()
             logger.info("Iteration %s: Predicted all texts: %s", iteration, pred_dict)
 
             # Positive RMSE
-            predictions = items.loc[not_is_synthetic, 'prediction'].values
+            predictions = items.loc[corpus_mask, 'prediction'].values
             positive_zone = (
                 (prev_predictions >= 0.5) | (predictions >= 0.5)
             )
-            positive_zone_rmse = np.sqrt(np.mean((predictions[positive_zone] - prev_predictions[positive_zone]) ** 2)) if positive_zone.sum() > 0 else 0.0
+            if positive_zone.sum() > 0:
+                diff = predictions[positive_zone] - prev_predictions[positive_zone]
+                positive_zone_rmse = np.sqrt(np.mean(diff ** 2))
+            else:
+                positive_zone_rmse = 0.0
             prev_predictions = predictions.copy()
             logger.info("Positive zone RMSE: %.4f", positive_zone_rmse)
 
@@ -257,7 +261,7 @@ class ActiveLearner:
             # Select next candidates
             if iteration < self.max_iterations:
                 logger.info("Iteration %s: Selecting candidates for next iteration...", iteration)
-                candidates = self._select_candidates(items.loc[not_is_synthetic & items["gt"].isna()])
+                candidates = self._select_candidates(items.loc[corpus_mask & items["gt"].isna()])
                 if len(candidates) == 0:
                     logger.info("No candidates found, stopping.")
                     break

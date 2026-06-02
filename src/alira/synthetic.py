@@ -1,4 +1,3 @@
-from typing import List
 from pydantic import BaseModel, ValidationError, Field
 
 from openai import APITimeoutError
@@ -16,10 +15,7 @@ def generate_synthetic_texts(
     """Generate n synthetic texts about query, using examples for format reference."""
 
     if prompt is None:
-        examples_block = "\n\n---\n\n".join(
-            f"{example}"
-            for i, example in enumerate(examples)
-        )
+        examples_block = "\n\n---\n\n".join(examples)
         prompt = f"""
 You are an expert generating texts related to a given topic. 
 Below are some randomly chosen example texts from a dataset.
@@ -39,7 +35,7 @@ Here are the examples:
     messages = [{'role': 'user', 'content': prompt}]
 
     class TextList(BaseModel):
-        texts: List[str] = Field(..., description="The list of generated texts of the given topic following the specified format.")
+        texts: list[str] = Field(..., description="The list of generated texts of the given topic following the specified format.")
 
     for attempt in range(max_retries):
         try:
@@ -48,9 +44,7 @@ Here are the examples:
                 return response.texts
         except APITimeoutError as e:
             print(f"Failed to generate texts before timeout. Error: {e}")
-            pass
         except ValidationError as e:
             print(f"Failed to generate exactly {n} texts. Error: {e}")
-            pass
 
     raise ValueError(f"Failed to get exactly {n} texts after {max_retries} attempts")

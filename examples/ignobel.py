@@ -30,24 +30,23 @@ logger = logging.getLogger(__name__)
 
 ################################################################
 
-# Read dataset with movie texts
-# (built from https://www.kaggle.com/datasets/tmdb/tmdb-movie-metadata)
+# Read dataset
 logger.info("Loading dataset...")
 df = pd.read_csv("data/ig_nobel_candidates.csv")
 logger.info("Loaded %s rows", len(df))
 
-learner = ActiveLearner(corpus=df["title"].rename("text"))
+learner = ActiveLearner(corpus=df["title"])
 query = "sad and depressing publications"
-logger.info(f"Starting classification for query: {query}")
+logger.info("Starting classification for query: %s", query)
 learner.fit(query=query)
 
 # Get predictions
 df["score"] = learner.predict_proba()
-df = df[df["score"] >= 0.5].sort_values("score", ascending=False)
+results_df = df[df["score"] >= 0.5].sort_values("score", ascending=False)
 
 # Save results to CSV
 results_path = output_dir / "results.csv"
-df.to_csv(results_path, index=False)
+results_df.to_csv(results_path, index=False)
 logger.info("Saved results to %s", results_path)
 
 logger.info("Done!")
