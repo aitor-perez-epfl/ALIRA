@@ -30,7 +30,8 @@ class ActiveLearner:
 
     def __init__(
         self,
-        df: pd.DataFrame,
+        corpus: list[str] | pd.Series | np.ndarray,
+        embeddings: np.ndarray | None = None,
         n_synthetic: int = 10,
         min_iterations: int = 3,
         max_iterations: int = 20,
@@ -43,7 +44,9 @@ class ActiveLearner:
     ):
         """
         Args:
-            df: Corpus with a required ``text`` column and optional ``embedding`` column
+            corpus: Collection of texts (list, Series or 1-D array of strings)
+            embeddings: Pre-computed embeddings aligned 1-to-1 with ``corpus``.  If
+                omitted, embeddings are generated on first access.
             n_synthetic: Number of synthetic texts to generate for bootstrapping
             min_iterations: Minimum iterations before early stopping is evaluated
             max_iterations: Maximum active learning iterations
@@ -54,10 +57,8 @@ class ActiveLearner:
             generation_prompt: Replaces the default synthetic text generation prompt
             evaluation_prompt: Replaces the default text evaluation prompt
         """
-        df = df.copy()
-        # Extract embeddings if present so user df stays clean; store as numpy array
-        self.embeddings_ = np.vstack(df.pop("embedding").values) if "embedding" in df.columns else None
-        self.corpus_ = df
+        self.corpus_ = pd.Series(corpus, name="text")
+        self.embeddings_ = np.array(embeddings) if embeddings is not None else None
         self.n_corpus_ = len(self.corpus_)
         self.n_synthetic = n_synthetic
         self.min_iterations = min_iterations
@@ -80,7 +81,7 @@ class ActiveLearner:
         """Return cached embeddings or compute and cache them."""
         if self.embeddings_ is None:
             logger.info("Generating embeddings for %s texts...", self.n_corpus_)
-            self.embeddings_ = np.array(send_embedding_request(self.corpus_["text"].tolist()))
+            self.embeddings_ = np.array(send_embedding_request(self.corpus_.tolist()))
             logger.info("Embeddings generated.")
         return self.embeddings_
 
@@ -140,10 +141,10 @@ class ActiveLearner:
 
         logger.info("Starting classification for query: %s", query)
 
-        df = self.corpus_.copy()
+        items = pd.DataFrame({"text": self.corpus_})
         corpus_embeddings = self.embeddings  # triggers computation if needed
 
-        non_empty = df[df["text"].str.strip() != ""]["text"]
+        non_empty = items[items["text"].str.strip() != ""]["text"]
         format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
 
         logger.info("Generating %s synthetic texts...", self.n_synthetic)
@@ -158,66 +159,66 @@ class ActiveLearner:
         synthetic_embeddings = np.array(synthetic_embeddings)
         logger.info("Embedded %s synthetic texts", len(synthetic_embeddings))
 
-        df["gt"] = pd.NA
-        df["is_synthetic"] = False
+        items["gt"] = pd.NA
+        items["is_synthetic"] = False
 
-        synthetic_df = pd.DataFrame({
+        synthetic_items = pd.DataFrame({
             "text": synthetic_texts,
             "is_synthetic": True,
             "gt": True
         })
-        synthetic_df.index = range(-1, -1 - len(synthetic_df), -1)
+        synthetic_items.index = range(-1, -1 - len(synthetic_items), -1)
 
         # Combine both dataframes
-        df = pd.concat([synthetic_df, df])
+        items = pd.concat([synthetic_items, items])
 
         # Compute distance to synthetic centroid
         all_embeddings = np.vstack([synthetic_embeddings, corpus_embeddings])
         synthetic_centroid = np.mean(synthetic_embeddings, axis=0).reshape(1, -1)
         synthetic_centroid = synthetic_centroid / np.linalg.norm(synthetic_centroid)
-        df["cosine_similarity"] = all_embeddings @ synthetic_centroid.T
+        items["cosine_similarity"] = all_embeddings @ synthetic_centroid.T
 
         # A priori probabilities are linear and evenly distributed on [0, 1] based on the cosine_similarity order
-        df["prediction"] = df['cosine_similarity'].rank() / len(df)
-        df["prediction_binary"] = df["prediction"] > 0.5
-        df["confidence"] = (df["prediction"] - 0.5).abs()
+        items["prediction"] = items['cosine_similarity'].rank() / len(items)
+        items["prediction_binary"] = items["prediction"] > 0.5
+        items["confidence"] = (items["prediction"] - 0.5).abs()
 
-        not_is_synthetic = ~df["is_synthetic"]
+        not_is_synthetic = ~items["is_synthetic"]
 
         logger.info("Selecting %s candidates for initial evaluation...", self.n_eval_per_iteration)
-        candidates = self._select_candidates(df.loc[not_is_synthetic])
+        candidates = self._select_candidates(items.loc[not_is_synthetic])
 
         # Active Learning loop
         logger.info("Starting active learning loop...")
         classifier = None
-        prev_predictions = df.loc[not_is_synthetic, 'prediction'].values
+        prev_predictions = items.loc[not_is_synthetic, 'prediction'].values
         iteration = 0
         for iteration in range(1, self.max_iterations + 1):
             # Evaluate candidates with LLM
             logger.info("Iteration %s: Evaluating %s texts...", iteration, len(candidates))
             evaluations = evaluate(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
-            df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
+            items.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
-            yes_count = df.loc[candidates.index].query("gt == True").shape[0]
-            no_count = df.loc[candidates.index].query("gt == False").shape[0]
+            yes_count = items.loc[candidates.index].query("gt == True").shape[0]
+            no_count = items.loc[candidates.index].query("gt == False").shape[0]
             logger.info("Iteration %s: Evaluated %s texts. Yes: %s, No: %s", iteration, len(candidates), yes_count, no_count)
 
             # Train on labeled data
-            labeled_mask = df["gt"].notna()
+            labeled_mask = items["gt"].notna()
             X_train = all_embeddings[labeled_mask]
-            y_train = df.loc[labeled_mask, "gt"].astype(bool).values
+            y_train = items.loc[labeled_mask, "gt"].astype(bool).values
 
             # Check we have both classes
             if len(np.unique(y_train)) < 2:
                 # Add farthest unlabeled as negatives
-                unlabeled = df[not_is_synthetic & df["gt"].isna()]
+                unlabeled = items[not_is_synthetic & items["gt"].isna()]
                 if len(unlabeled) > 0:
                     n_add = max(1, int(y_train.sum()))
                     farthest = unlabeled.nsmallest(n_add, "cosine_similarity")
-                    df.loc[farthest.index, "gt"] = False
-                    labeled_mask = df["gt"].notna()
+                    items.loc[farthest.index, "gt"] = False
+                    labeled_mask = items["gt"].notna()
                     X_train = all_embeddings[labeled_mask]
-                    y_train = df.loc[labeled_mask, "gt"].astype(bool).values
+                    y_train = items.loc[labeled_mask, "gt"].astype(bool).values
                     logger.info("Added %s distant texts as negatives", len(farthest))
 
             if len(np.unique(y_train)) < 2:
@@ -225,7 +226,7 @@ class ActiveLearner:
                 continue
 
             # Train classifier
-            dist_dict = df.loc[labeled_mask, "gt"].value_counts().to_dict()
+            dist_dict = items.loc[labeled_mask, "gt"].value_counts().to_dict()
             logger.info("Iteration %s: Training classifier on %s texts (%s)...", iteration, len(y_train), dist_dict)
             classifier = LogisticRegressionClassifier(c=self.c_value)
             classifier.fit(X_train, y_train)
@@ -233,14 +234,14 @@ class ActiveLearner:
 
             # Predict
             logger.info("Iteration %s: Predicting all texts with freshly trained classifier...", iteration)
-            df["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
-            df["prediction_binary"] = df["prediction"] > 0.5
-            df["confidence"] = (df["prediction"] - 0.5).abs()
-            pred_dict = df.loc[not_is_synthetic, "prediction_binary"].value_counts().to_dict()
+            items["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
+            items["prediction_binary"] = items["prediction"] > 0.5
+            items["confidence"] = (items["prediction"] - 0.5).abs()
+            pred_dict = items.loc[not_is_synthetic, "prediction_binary"].value_counts().to_dict()
             logger.info("Iteration %s: Predicted all texts: %s", iteration, pred_dict)
 
             # Positive RMSE
-            predictions = df.loc[not_is_synthetic, 'prediction'].values
+            predictions = items.loc[not_is_synthetic, 'prediction'].values
             positive_zone = (
                 (prev_predictions >= 0.5) | (predictions >= 0.5)
             )
@@ -256,7 +257,7 @@ class ActiveLearner:
             # Select next candidates
             if iteration < self.max_iterations:
                 logger.info("Iteration %s: Selecting candidates for next iteration...", iteration)
-                candidates = self._select_candidates(df.loc[not_is_synthetic & df["gt"].isna()])
+                candidates = self._select_candidates(items.loc[not_is_synthetic & items["gt"].isna()])
                 if len(candidates) == 0:
                     logger.info("No candidates found, stopping.")
                     break
@@ -269,35 +270,60 @@ class ActiveLearner:
         logger.info("Done! Time: %.2fs", self.execution_time_)
         return self
 
-    def predict_proba(self, df: pd.DataFrame | None = None) -> np.ndarray:
+    def predict_proba(
+        self,
+        corpus: list[str] | pd.Series | np.ndarray | None = None,
+        embeddings: np.ndarray | None = None,
+    ) -> pd.Series:
         """Return the probability that each text matches the query.
 
+        Exactly one of ``corpus`` and ``embeddings`` may be supplied; supplying
+        neither predicts on the corpus provided at initialisation.
+
         Args:
-            df: DataFrame with a ``text`` column. If *None*, uses the corpus
-                supplied at initialisation. Embeddings are generated
+            corpus: New texts to predict on. Embeddings are generated
                 automatically if absent.
+            embeddings: Pre-computed embeddings to predict on directly.
 
         Returns:
-            1-D array of shape (n_samples,) with P(positive) for each text.
+            pd.Series indexed like the input texts with P(positive) values.
         """
         if self.classifier_ is None:
             raise ValueError("This ActiveLearner instance is not fitted yet. Call 'fit' before predicting.")
 
-        if df is None:
-            return self.classifier_.predict_proba(self.embeddings)[:, 1]
+        if corpus is not None and embeddings is not None:
+            raise ValueError("Cannot specify both 'corpus' and 'embeddings'. Provide one or neither.")
 
-        embeddings = np.array(send_embedding_request(df["text"].tolist()))
-        return self.classifier_.predict_proba(embeddings)[:, 1]
+        if embeddings is not None:
+            preds = self.classifier_.predict_proba(np.array(embeddings))[:, 1]
+            return pd.Series(preds)
 
-    def predict(self, df: pd.DataFrame | None = None) -> np.ndarray:
+        if corpus is not None:
+            texts = pd.Series(corpus)
+            embs = np.array(send_embedding_request(texts.tolist()))
+            preds = self.classifier_.predict_proba(embs)[:, 1]
+            return pd.Series(preds, index=texts.index)
+
+        # Default: predict on stored corpus
+        preds = self.classifier_.predict_proba(self.embeddings)[:, 1]
+        return pd.Series(preds, index=self.corpus_.index)
+
+    def predict(
+        self,
+        corpus: list[str] | pd.Series | np.ndarray | None = None,
+        embeddings: np.ndarray | None = None,
+    ) -> pd.Series:
         """Return binary predictions for each text.
 
+        Exactly one of ``corpus`` and ``embeddings`` may be supplied; supplying
+        neither predicts on the corpus provided at initialisation.
+
         Args:
-            df: DataFrame with a ``text`` column. If *None*, uses the corpus
-                supplied at initialisation. Embeddings are generated
+            corpus: New texts to predict on. Embeddings are generated
                 automatically if absent.
+            embeddings: Pre-computed embeddings to predict on directly.
 
         Returns:
-            Boolean array of shape (n_samples,) with True for predicted positives.
+            Boolean pd.Series indexed like the input texts.
         """
-        return self.predict_proba(df) >= 0.5
+        return self.predict_proba(corpus, embeddings) >= 0.5

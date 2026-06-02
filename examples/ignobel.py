@@ -12,7 +12,7 @@ from alira import ActiveLearner
 
 # Setup logging to file and console
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = Path(f"results/demo-{timestamp}")
+output_dir = Path(f"results/ignobel-{timestamp}")
 output_dir.mkdir(exist_ok=True, parents=True)
 log_path = output_dir / "run.log"
 
@@ -33,21 +33,21 @@ logger = logging.getLogger(__name__)
 # Read dataset with movie texts
 # (built from https://www.kaggle.com/datasets/tmdb/tmdb-movie-metadata)
 logger.info("Loading dataset...")
-movies = pd.read_csv("data/movies.csv")
-logger.info("Loaded %s movies", len(movies))
+df = pd.read_csv("data/ig_nobel_candidates.csv")
+logger.info("Loaded %s rows", len(df))
 
-learner = ActiveLearner(corpus=movies["text"])
-query = "movies for children"
-logger.info("Starting classification for query: %s", query)
+learner = ActiveLearner(corpus=df["title"].rename("text"))
+query = "sad and depressing publications"
+logger.info(f"Starting classification for query: {query}")
 learner.fit(query=query)
 
 # Get predictions
-movies["score"] = learner.predict_proba()
-children_movies = movies[movies["score"] >= 0.5].sort_values("score", ascending=False)
+df["score"] = learner.predict_proba()
+df = df[df["score"] >= 0.5].sort_values("score", ascending=False)
 
 # Save results to CSV
 results_path = output_dir / "results.csv"
-children_movies.to_csv(results_path, index=False)
+df.to_csv(results_path, index=False)
 logger.info("Saved results to %s", results_path)
 
 logger.info("Done!")
