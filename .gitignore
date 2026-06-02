@@ -214,3 +214,6 @@ results
 
 # Code assistants
 AGENTS.md
+
+# Numpy arrays
+*.npy
