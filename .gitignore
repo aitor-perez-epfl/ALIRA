@@ -212,8 +212,6 @@ __marimo__/
 # Results
 results
 
-# Code assistants
-AGENTS.md
-
 # Numpy arrays
 *.npy
+
