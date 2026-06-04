@@ -133,4 +133,7 @@ Core dependencies (see `pyproject.toml`):
 - pydantic
 - scikit-learn
 
-The example scripts additionally require `python-dotenv`, which is not included in the core package dependencies.
+Optional dependencies for the example scripts (install with `pip install -e ".[demo]"`):
+
+- python-dotenv
+- epfl-data-index

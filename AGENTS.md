@@ -1,5 +1,8 @@
 # ALIRA — Agent Guide
 
+## What it does
+ALIRA bootstraps a binary classifier with **HyDE (Hypothetical Document Embeddings)** — LLM-generated synthetic texts — then runs an active-learning loop: iteratively evaluating real corpus items via an LLM, training a Logistic Regression classifier, and selecting the next batch based on prediction uncertainty. Early stopping triggers when positive-zone prediction drift (RMSE) stabilises.
+
 ## Project Structure
 - Single Python package `alira` using `src/` layout (`src/alira/`).
 - Build system: Hatchling (see `pyproject.toml`).
@@ -14,8 +17,8 @@
 
 ## Running Code
 - Install locally: `pip install -e .` (core deps: numpy, openai, pandas, pydantic, scikit-learn).
+- To run the example scripts: `pip install -e ".[demo]"` (adds `python-dotenv` and `epfl-data-index`).
 - Example script: `python examples/demo.py`
-  - Also requires `python-dotenv` (not listed in `pyproject.toml` dependencies).
   - Expects `data/movies.csv` relative to the working directory.
   - Writes outputs to `results/` (gitignored).
 - The public API exports `ActiveLearner` from `alira`.
