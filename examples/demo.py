@@ -15,7 +15,7 @@ from alira import ActiveLearner
 
 # Dataset and query
 dataset = "movies"
-query = "movies about parenthood"
+query = "sports"
 
 # Data paths
 csv_path = f"data/{dataset}.csv"
@@ -60,9 +60,12 @@ else:
 
 ################################################################
 
-# Active learning classifier
+# Initialise Active Learner
 learner = ActiveLearner(corpus=df["text"], embeddings=embeddings)
-logger.info("Starting classification for query: %s", query)
+logger.info("Embeddings shape: %s", learner.embeddings.shape)
+
+# Start training
+logger.info("Starting training for query: %s", query)
 learner.fit(query=query)
 
 # Get predictions
