@@ -58,7 +58,13 @@ class ActiveLearner:
             evaluation_prompt: Replaces the default text evaluation prompt
         """
         self.corpus_ = pd.Series(corpus, name="text")
-        self.embeddings_ = np.array(embeddings) if embeddings is not None else None
+        if embeddings is not None:
+            arr = np.array(embeddings)
+            if arr.ndim == 1 and arr.dtype == object and len(arr) > 0:
+                arr = np.vstack(arr)
+            self.embeddings_ = arr
+        else:
+            self.embeddings_ = None
         self.n_corpus_ = len(self.corpus_)
         self.n_synthetic = n_synthetic
         self.min_iterations = min_iterations
@@ -271,7 +277,7 @@ class ActiveLearner:
         self.query_ = query
         self.iterations_ = iteration
         self.execution_time_ = time.time() - start_time
-        logger.info("Done! Time: %.2fs", self.execution_time_)
+        logger.info("Finished training! Time: %.2fs", self.execution_time_)
         return self
 
     def predict_proba(
