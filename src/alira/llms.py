@@ -1,10 +1,6 @@
-import logging
-
 from openai import OpenAI
 
 from alira.config import CONFIG
-
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def send_embedding_request(texts: list[str]) -> list[list[float]]:

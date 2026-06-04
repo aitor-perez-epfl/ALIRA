@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "alira"
 version = "0.1.0"
-description = "Active Learning Iterative Retrieval Agent – combines RAG with active learning to iteratively discover relevant documents from large corpora using LLM validation and classifier refinement."
+description = "Active Learning Iterative Retrieval Agent – uses HyDE (Hypothetical Document Embeddings) to bootstrap and iteratively discovers relevant documents from large corpora using active learning, LLM validation, and classifier refinement."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,6 +14,12 @@ dependencies = [
     "pandas",
     "pydantic",
     "scikit-learn",
+]
+
+[project.optional-dependencies]
+demo = [
+    "python-dotenv",
+    "epfl-data-index",
 ]
 
 [tool.hatch.build.targets.wheel]

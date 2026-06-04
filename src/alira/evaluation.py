@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from alira.llms import send_llm_request
 
 
-async def _evaluate_async(
+async def evaluate_async(
     query: str,
     texts: list[str],
     prompt: str | None = None,
@@ -51,4 +51,15 @@ def evaluate(
     Makes parallel LLM calls, one per text, with a maximum of 5 concurrent requests.
     """
 
-    return asyncio.run(_evaluate_async(query, texts, prompt))
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None:
+        raise RuntimeError(
+            "Cannot call evaluate() from within a running event loop. "
+            "Use `await evaluate_async(...)` instead."
+        )
+
+    return asyncio.run(evaluate_async(query, texts, prompt))

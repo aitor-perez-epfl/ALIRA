@@ -1,6 +1,7 @@
 """Lab Explorer Twin
 
-Script trying to replicate Lab Explorer using a simpler ALIRA version that doesn't handle the data
+Fetches publications from EPFL's data index and uses ALIRA to discover those 
+related to a given research query via active learning with LLM validation.
 """
 
 from dotenv import load_dotenv
@@ -31,6 +32,7 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ logger.info("Fetched %s documents with type %s", len(df), doc_type)
 
 # Find publications related to the query
 logger.info("Preparing Active Learner for documents with type `%s`...", doc_type)
-learner = ActiveLearner(corpus=df["text"])
+learner = ActiveLearner(corpus=df["text"], embeddings=df['embedding'])
 logger.info("Fitting learner for query=`%s`...", query)
 learner.fit(query=query)
 logger.info("Learner fit")
