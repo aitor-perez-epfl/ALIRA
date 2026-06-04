@@ -168,18 +168,24 @@ class ActiveLearner:
         items["gt"] = pd.NA
         items["is_synthetic"] = False
 
-        synthetic_items = pd.DataFrame({
+        positive_synthetic = pd.DataFrame({
             "text": synthetic_texts,
             "is_synthetic": True,
             "gt": True
         })
-        synthetic_items.index = range(-1, -1 - len(synthetic_items), -1)
+        positive_synthetic.index = range(-1, -1 - len(positive_synthetic), -1)
 
-        # Combine both dataframes
-        items = pd.concat([synthetic_items, items])
+        negative_synthetic = pd.DataFrame({
+            "text": [""] * len(synthetic_texts),
+            "is_synthetic": True,
+            "gt": False
+        })
+        negative_synthetic.index = range(-1 - len(positive_synthetic), -1 - 2 * len(positive_synthetic), -1)
+
+        items = pd.concat([positive_synthetic, negative_synthetic, items])
 
         # Compute distance to synthetic centroid
-        all_embeddings = np.vstack([synthetic_embeddings, corpus_embeddings])
+        all_embeddings = np.vstack([synthetic_embeddings, -synthetic_embeddings, corpus_embeddings])
         synthetic_centroid = np.mean(synthetic_embeddings, axis=0).reshape(1, -1)
         synthetic_centroid = synthetic_centroid / np.linalg.norm(synthetic_centroid)
         items["cosine_similarity"] = all_embeddings @ synthetic_centroid.T
@@ -213,23 +219,6 @@ class ActiveLearner:
             labeled_mask = items["gt"].notna()
             X_train = all_embeddings[labeled_mask]
             y_train = items.loc[labeled_mask, "gt"].astype(bool).values
-
-            # Check we have both classes
-            if len(np.unique(y_train)) < 2:
-                # Add farthest unlabeled as negatives
-                unlabeled = items[corpus_mask & items["gt"].isna()]
-                if len(unlabeled) > 0:
-                    n_add = max(1, int(y_train.sum()))
-                    farthest = unlabeled.nsmallest(n_add, "cosine_similarity")
-                    items.loc[farthest.index, "gt"] = False
-                    labeled_mask = items["gt"].notna()
-                    X_train = all_embeddings[labeled_mask]
-                    y_train = items.loc[labeled_mask, "gt"].astype(bool).values
-                    logger.info("Added %s distant texts as negatives", len(farthest))
-
-            if len(np.unique(y_train)) < 2:
-                logger.info("Iteration %s: Skipping - need both classes", iteration)
-                continue
 
             # Train classifier
             dist_dict = items.loc[labeled_mask, "gt"].value_counts().to_dict()
