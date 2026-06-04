@@ -19,7 +19,7 @@ from alira import ActiveLearner
 
 # document type and query
 doc_type = "publication"
-query = "perovskite solar cells"
+query = "process mining"
 
 ################################################################
 
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 logger.info("Fetching documents with type `%s`...", doc_type)
 response = edi.fetch_all(doc_type=doc_type)
 hits = response['hits']['hits']
-df = pd.DataFrame([hit["_source"] for hit in hits])
+df = pd.DataFrame([hit["_source"] for hit in hits])[['id', 'text', 'embedding']]
 logger.info("Fetched %s documents with type %s", len(df), doc_type)
 
 ################################################################
@@ -64,6 +64,7 @@ learner.fit(query=query)
 # Get predictions
 df["score"] = learner.predict_proba()
 results_df = df[df["score"] >= 0.5].sort_values("score", ascending=False)
+results_df = results_df.drop(columns=["embedding"])
 
 # Save results
 results_path = output_dir / "results.csv"
