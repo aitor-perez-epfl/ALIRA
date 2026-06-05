@@ -13,10 +13,6 @@ from alira.llms import send_embedding_request
 
 logger = logging.getLogger(__name__)
 
-pd.set_option('display.max_rows', 500)
-pd.set_option('display.max_columns', 500)
-pd.set_option('display.width', 1000)
-
 _N_FORMAT_EXAMPLES = 5
 
 
@@ -31,7 +27,7 @@ class ActiveLearner:
     def __init__(
         self,
         corpus: list[str] | pd.Series | np.ndarray,
-        embeddings: np.ndarray | None = None,
+        embeddings: np.ndarray | pd.Series | None = None,
         n_synthetic: int = 10,
         min_iterations: int = 3,
         max_iterations: int = 20,
@@ -82,8 +78,7 @@ class ActiveLearner:
         self.iterations_ = None
         self.execution_time_ = None
 
-    @property
-    def embeddings(self) -> np.ndarray:
+    def get_embeddings(self) -> np.ndarray:
         """Return cached embeddings or compute and cache them."""
         if self.embeddings_ is None:
             logger.info("Generating embeddings for %s texts...", self.n_corpus_)
@@ -117,7 +112,7 @@ class ActiveLearner:
                     zone_indices = zone_df.index.to_numpy()
                     # Map index → position in self.corpus_ for embeddings lookup
                     # corpus_ indices are 0..n_corpus_-1; zone_df indices are aligned
-                    zone_embeddings = self.embeddings[zone_indices]
+                    zone_embeddings = self.get_embeddings()[zone_indices]
                     kmeans = MiniBatchKMeans(n_clusters=n_clusters, random_state=42, n_init=3)
                     zone_df = zone_df.copy()
                     zone_df["cluster"] = kmeans.fit_predict(zone_embeddings)
@@ -148,7 +143,7 @@ class ActiveLearner:
         logger.info("Starting classification for query: %s", query)
 
         items = pd.DataFrame({"text": self.corpus_})
-        corpus_embeddings = self.embeddings  # triggers computation if needed
+        corpus_embeddings = self.get_embeddings()  # triggers computation if needed
 
         non_empty = items[items["text"].str.strip() != ""]["text"]
         format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
@@ -201,7 +196,6 @@ class ActiveLearner:
         logger.info("Starting active learning loop...")
         classifier = None
         prev_predictions = items.loc[corpus_mask, 'prediction'].values
-        iteration = 0
         for iteration in range(1, self.max_iterations + 1):
             logger.info("Iteration %s: Selecting candidates...", iteration)
             candidates = self._select_candidates(items.loc[corpus_mask & items["gt"].isna()])
@@ -267,7 +261,7 @@ class ActiveLearner:
     def predict_proba(
         self,
         corpus: list[str] | pd.Series | np.ndarray | None = None,
-        embeddings: np.ndarray | None = None,
+        embeddings: np.ndarray | pd.Series | None = None,
     ) -> pd.Series:
         """Return the probability that each text matches the query.
 
@@ -290,7 +284,8 @@ class ActiveLearner:
 
         if embeddings is not None:
             preds = self.classifier_.predict_proba(np.array(embeddings))[:, 1]
-            return pd.Series(preds)
+            index = getattr(embeddings, "index", None)
+            return pd.Series(preds, index=index)
 
         if corpus is not None:
             texts = pd.Series(corpus)
@@ -299,13 +294,13 @@ class ActiveLearner:
             return pd.Series(preds, index=texts.index)
 
         # Default: predict on stored corpus
-        preds = self.classifier_.predict_proba(self.embeddings)[:, 1]
+        preds = self.classifier_.predict_proba(self.get_embeddings())[:, 1]
         return pd.Series(preds, index=self.corpus_.index)
 
     def predict(
         self,
         corpus: list[str] | pd.Series | np.ndarray | None = None,
-        embeddings: np.ndarray | None = None,
+        embeddings: np.ndarray | pd.Series | None = None,
     ) -> pd.Series:
         """Return binary predictions for each text.
 
