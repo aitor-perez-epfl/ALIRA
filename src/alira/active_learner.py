@@ -197,15 +197,19 @@ class ActiveLearner:
 
         corpus_mask = ~items["is_synthetic"]
 
-        logger.info("Selecting %s candidates for initial evaluation...", self.n_eval_per_iteration)
-        candidates = self._select_candidates(items.loc[corpus_mask])
-
         # Active Learning loop
         logger.info("Starting active learning loop...")
         classifier = None
         prev_predictions = items.loc[corpus_mask, 'prediction'].values
         iteration = 0
         for iteration in range(1, self.max_iterations + 1):
+            logger.info("Iteration %s: Selecting candidates...", iteration)
+            candidates = self._select_candidates(items.loc[corpus_mask & items["gt"].isna()])
+            if len(candidates) == 0:
+                logger.info("No candidates found, stopping.")
+                break
+            logger.info("Iteration %s: Selected %s candidates to evaluate...", iteration, len(candidates))
+
             # Evaluate candidates with LLM
             logger.info("Iteration %s: Evaluating %s texts...", iteration, len(candidates))
             evaluations = evaluate(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
@@ -252,15 +256,6 @@ class ActiveLearner:
             if iteration > self.min_iterations and positive_zone_rmse < self.positive_zone_rmse_threshold:
                 logger.info("Early stop: Positive zone RMSE (%.4f) below threshold (%.4f).", positive_zone_rmse, self.positive_zone_rmse_threshold)
                 break
-
-            # Select next candidates
-            if iteration < self.max_iterations:
-                logger.info("Iteration %s: Selecting candidates for next iteration...", iteration)
-                candidates = self._select_candidates(items.loc[corpus_mask & items["gt"].isna()])
-                if len(candidates) == 0:
-                    logger.info("No candidates found, stopping.")
-                    break
-                logger.info("Iteration %s: Selected %s candidates to evaluate...", iteration, len(candidates))
 
         self.classifier_ = classifier
         self.query_ = query
