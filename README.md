@@ -69,7 +69,7 @@ Main entrypoint exported by the `alira` package.
 ```python
 ActiveLearner(
     corpus: list[str] | pd.Series | np.ndarray,
-    embeddings: np.ndarray | None = None,
+    embeddings: np.ndarray | pd.Series | None = None,
     n_synthetic: int = 10,
     min_iterations: int = 3,
     max_iterations: int = 20,

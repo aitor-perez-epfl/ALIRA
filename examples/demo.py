@@ -62,7 +62,7 @@ else:
 
 # Initialise Active Learner
 learner = ActiveLearner(corpus=df["text"], embeddings=embeddings)
-logger.info("Embeddings shape: %s", learner.embeddings.shape)
+logger.info("Embeddings shape: %s", learner.get_embeddings().shape)
 
 # Start training
 logger.info("Starting training for query: %s", query)

@@ -19,7 +19,7 @@ from alira import ActiveLearner
 
 # document type and query
 doc_type = "publication"
-query = "process mining"
+query = "discrete choice models"
 
 ################################################################
 
@@ -55,7 +55,7 @@ logger.info("Fetched %s documents with type %s", len(df), doc_type)
 
 # Initialise Active Learner
 learner = ActiveLearner(corpus=df["text"], embeddings=df["embedding"])
-logger.info("Embeddings shape: %s", learner.embeddings.shape)
+logger.info("Embeddings shape: %s", learner.get_embeddings().shape)
 
 # Start training
 logger.info("Starting training for query: %s", query)

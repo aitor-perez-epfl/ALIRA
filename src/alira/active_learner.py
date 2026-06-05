@@ -142,63 +142,68 @@ class ActiveLearner:
 
         logger.info("Starting classification for query: %s", query)
 
-        items = pd.DataFrame({"text": self.corpus_})
-        corpus_embeddings = self.get_embeddings()  # triggers computation if needed
+        # Trigger embedding computation if needed
+        corpus_embeddings = self.get_embeddings()
 
-        non_empty = items[items["text"].str.strip() != ""]["text"]
-        format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
-
+        # Generate positive synthetic texts
         logger.info("Generating %s synthetic texts...", self.n_synthetic)
+        non_empty = self.corpus_[self.corpus_.str.strip() != ""]
+        format_examples = non_empty.sample(min(_N_FORMAT_EXAMPLES, len(non_empty))).tolist()
         synthetic_texts = generate_synthetic_texts(
             query, self.n_synthetic, format_examples, self.generation_prompt
         )
         logger.info("Generated %s synthetic texts", len(synthetic_texts))
         logger.info(synthetic_texts)
 
+        # Embed positive synthetic texts
         logger.info("Embedding synthetic texts...")
         synthetic_embeddings = send_embedding_request(synthetic_texts)
         synthetic_embeddings = np.array(synthetic_embeddings)
         logger.info("Embedded %s synthetic texts", len(synthetic_embeddings))
 
-        items["gt"] = pd.NA
-        items["is_synthetic"] = False
+        # Gather everything in a pd.DataFrame
+        corpus_df = pd.DataFrame({
+            "text": self.corpus_,
+            "is_synthetic": False,
+            "gt": pd.NA
+        })
 
-        positive_synthetic = pd.DataFrame({
+        synthetic_positives_df = pd.DataFrame({
             "text": synthetic_texts,
             "is_synthetic": True,
             "gt": True
         })
-        positive_synthetic.index = range(-1, -1 - len(positive_synthetic), -1)
+        synthetic_positives_df.index = range(-1, -1 - len(synthetic_positives_df), -1)
 
-        negative_synthetic = pd.DataFrame({
+        synthetic_negatives_df = pd.DataFrame({
             "text": [""] * len(synthetic_texts),
             "is_synthetic": True,
             "gt": False
         })
-        negative_synthetic.index = range(-1 - len(positive_synthetic), -1 - 2 * len(positive_synthetic), -1)
+        synthetic_negatives_df.index = range(-1 - len(synthetic_positives_df), -1 - 2 * len(synthetic_positives_df), -1)
 
-        items = pd.concat([positive_synthetic, negative_synthetic, items])
+        combined_df = pd.concat([synthetic_positives_df, synthetic_negatives_df, corpus_df])
 
         # Compute distance to synthetic centroid
         all_embeddings = np.vstack([synthetic_embeddings, -synthetic_embeddings, corpus_embeddings])
         synthetic_centroid = np.mean(synthetic_embeddings, axis=0).reshape(1, -1)
         synthetic_centroid = synthetic_centroid / np.linalg.norm(synthetic_centroid)
-        items["cosine_similarity"] = all_embeddings @ synthetic_centroid.T
+        combined_df["cosine_similarity"] = all_embeddings @ synthetic_centroid.T
 
         # A priori probabilities are linear and evenly distributed on [0, 1] based on the cosine_similarity order
-        items["prediction"] = items['cosine_similarity'].rank() / len(items)
-        items["prediction_binary"] = items["prediction"] > 0.5
-        items["confidence"] = (items["prediction"] - 0.5).abs()
+        combined_df["prediction"] = combined_df['cosine_similarity'].rank() / len(combined_df)
+        combined_df["prediction_binary"] = combined_df["prediction"] > 0.5
+        combined_df["confidence"] = (combined_df["prediction"] - 0.5).abs()
 
-        corpus_mask = ~items["is_synthetic"]
+        corpus_mask = ~combined_df["is_synthetic"]
 
         # Active Learning loop
         logger.info("Starting active learning loop...")
         classifier = None
-        prev_predictions = items.loc[corpus_mask, 'prediction'].values
+        prev_predictions = combined_df.loc[corpus_mask, 'prediction'].values
         for iteration in range(1, self.max_iterations + 1):
             logger.info("Iteration %s: Selecting candidates...", iteration)
-            candidates = self._select_candidates(items.loc[corpus_mask & items["gt"].isna()])
+            candidates = self._select_candidates(combined_df.loc[corpus_mask & combined_df["gt"].isna()])
             if len(candidates) == 0:
                 logger.info("No candidates found, stopping.")
                 break
@@ -207,19 +212,19 @@ class ActiveLearner:
             # Evaluate candidates with LLM
             logger.info("Iteration %s: Evaluating %s texts...", iteration, len(candidates))
             evaluations = evaluate(query=query, texts=candidates["text"].tolist(), prompt=self.evaluation_prompt)
-            items.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
+            combined_df.loc[candidates.index, "gt"] = pd.array(evaluations, dtype="boolean")
 
             yes_count = sum(evaluations)
             no_count = len(evaluations) - yes_count
             logger.info("Iteration %s: Evaluated %s texts. Yes: %s, No: %s", iteration, len(candidates), yes_count, no_count)
 
             # Train on labeled data
-            labeled_mask = items["gt"].notna()
+            labeled_mask = combined_df["gt"].notna()
             X_train = all_embeddings[labeled_mask]
-            y_train = items.loc[labeled_mask, "gt"].astype(bool).values
+            y_train = combined_df.loc[labeled_mask, "gt"].astype(bool).values
 
             # Train classifier
-            dist_dict = items.loc[labeled_mask, "gt"].value_counts().to_dict()
+            dist_dict = combined_df.loc[labeled_mask, "gt"].value_counts().to_dict()
             logger.info("Iteration %s: Training classifier on %s texts (%s)...", iteration, len(y_train), dist_dict)
             classifier = LogisticRegressionClassifier(c=self.c_value)
             classifier.fit(X_train, y_train)
@@ -227,14 +232,14 @@ class ActiveLearner:
 
             # Predict
             logger.info("Iteration %s: Predicting all texts with freshly trained classifier...", iteration)
-            items["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
-            items["prediction_binary"] = items["prediction"] > 0.5
-            items["confidence"] = (items["prediction"] - 0.5).abs()
-            pred_dict = items.loc[corpus_mask, "prediction_binary"].value_counts().to_dict()
+            combined_df["prediction"] = classifier.predict_proba(all_embeddings)[:, -1]
+            combined_df["prediction_binary"] = combined_df["prediction"] > 0.5
+            combined_df["confidence"] = (combined_df["prediction"] - 0.5).abs()
+            pred_dict = combined_df.loc[corpus_mask, "prediction_binary"].value_counts().to_dict()
             logger.info("Iteration %s: Predicted all texts: %s", iteration, pred_dict)
 
             # Positive RMSE
-            predictions = items.loc[corpus_mask, 'prediction'].values
+            predictions = combined_df.loc[corpus_mask, 'prediction'].values
             positive_zone = (
                 (prev_predictions >= 0.5) | (predictions >= 0.5)
             )
