@@ -4,77 +4,57 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import logging
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from alira import ActiveLearner
+from utils import load_data, resolve_embeddings_path, setup_logging
 
-# Dataset and query
-dataset = "movies"
-query = "sports"
 
-# Data paths
-csv_path = f"data/{dataset}.csv"
-embeddings_path = f"data/{dataset}_embeddings.npy"
+def run(dataset: str, query: str) -> None:
+    # Logging
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_dir = Path(f"results/{dataset}-{timestamp}")
+    logger = setup_logging(output_dir)
 
-################################################################
+    ################################################################
 
-# Logging
-timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-output_dir = Path(f"results/{dataset}-{timestamp}")
-output_dir.mkdir(exist_ok=True, parents=True)
-log_path = output_dir / "run.log"
+    # Load data and embeddings
+    df = load_data(dataset)
+    logger.info("Loaded %s rows", len(df))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.FileHandler(log_path),
-        logging.StreamHandler(),
-    ],
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+    embedding_path = resolve_embeddings_path(dataset)
+    if embedding_path.exists():
+        logger.info("Loading cached embeddings...")
+        embeddings = np.load(embedding_path)
+        logger.info("Loaded embeddings with shape %s", embeddings.shape)
+    else:
+        logger.info("No cached embeddings found, will compute on demand.")
+        embeddings = None
 
-logger = logging.getLogger(__name__)
+    ################################################################
 
-################################################################
+    # Initialise Active Learner
+    learner = ActiveLearner(corpus=df["text"], embeddings=embeddings)
+    logger.info("Embeddings shape: %s", learner.get_embeddings().shape)
 
-# Load data and embeddings
-logger.info("Loading dataset from %s...", csv_path)
-df = pd.read_csv(csv_path)
-logger.info("Loaded %s rows", len(df))
+    # Start training
+    logger.info("Starting training for query: %s", query)
+    learner.fit(query=query)
 
-embedding_path = Path(embeddings_path)
-if embedding_path.exists():
-    logger.info("Loading cached embeddings...")
-    embeddings = np.load(embedding_path)
-    logger.info("Loaded embeddings with shape %s", embeddings.shape)
-else:
-    logger.info("No cached embeddings found, will compute on demand.")
-    embeddings = None
+    # Get predictions
+    df["score"] = learner.predict_proba()
+    results_df = df[df["score"] >= 0.5].sort_values("score", ascending=False)
 
-################################################################
+    # Save results
+    results_path = output_dir / "results.csv"
+    results_df.to_csv(results_path, index=False)
+    logger.info("Saved results to %s", results_path)
 
-# Initialise Active Learner
-learner = ActiveLearner(corpus=df["text"], embeddings=embeddings)
-logger.info("Embeddings shape: %s", learner.get_embeddings().shape)
+    logger.info("Done!")
 
-# Start training
-logger.info("Starting training for query: %s", query)
-learner.fit(query=query)
 
-# Get predictions
-df["score"] = learner.predict_proba()
-results_df = df[df["score"] >= 0.5].sort_values("score", ascending=False)
-
-# Save results
-results_path = output_dir / "results.csv"
-results_df.to_csv(results_path, index=False)
-logger.info("Saved results to %s", results_path)
-
-logger.info("Done!")
+if __name__ == "__main__":
+    run("movies", "superheroes")

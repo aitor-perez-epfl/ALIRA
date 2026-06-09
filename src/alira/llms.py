@@ -2,17 +2,24 @@ from openai import OpenAI, BadRequestError
 
 from alira.config import CONFIG
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def send_embedding_request(texts: list[str]) -> list[list[float]]:
+    logger.info(f"Sending embedding request for {len(texts)} texts")
     client = OpenAI(base_url=CONFIG['ALIRA_LLM_BASE_URL'], api_key=CONFIG['ALIRA_LLM_API_KEY'])
     embeddings: list[list[float]] = []
     batch_size = 500
 
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
+        logger.info(f"Processing embedding batch {i // batch_size + 1}/{(len(texts) - 1) // batch_size + 1} ({len(batch)} items)")
         r = client.embeddings.create(model=CONFIG['ALIRA_LLM_EMBEDDING_MODEL'], input=batch)
         embeddings += [item.embedding for item in r.data]
 
+    logger.info(f"Received {len(embeddings)} embeddings")
     return embeddings
 
 

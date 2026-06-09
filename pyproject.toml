@@ -20,6 +20,7 @@ dependencies = [
 demo = [
     "python-dotenv",
     "epfl-data-index",
+    "pyarrow",
 ]
 
 [tool.hatch.build.targets.wheel]

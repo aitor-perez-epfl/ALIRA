@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +15,7 @@ import pandas as pd
 import epfl_data_index as edi
 
 from alira import ActiveLearner
+from utils import setup_logging
 
 # document type and query
 doc_type = "publication"
@@ -26,21 +26,7 @@ query = "discrete choice models"
 # Setup logging to file and console
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 output_dir = Path(f"results/lab-explorer-{timestamp}")
-output_dir.mkdir(exist_ok=True, parents=True)
-log_path = output_dir / "run.log"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.FileHandler(log_path),
-        logging.StreamHandler(),
-    ],
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-logger = logging.getLogger(__name__)
+logger = setup_logging(output_dir)
 
 ################################################################
 

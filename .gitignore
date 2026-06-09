@@ -215,3 +215,5 @@ results
 # Numpy arrays
 *.npy
 
+# AISTS data
+examples/data/aists_*
